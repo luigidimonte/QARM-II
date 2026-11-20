@@ -19,6 +19,9 @@ SIGMA_MIN_MARGIN = 0.005      # default sigma_min = constrained min-variance vol
 SIGMA_MAX_FRACTION = 0.90     # default sigma_max = 90% of the maximum feasible vol
 PROB_LEVELS = (0.50, 0.75, 0.90)
 CLIP_TOL = 1e-4               # ignore clipping smaller than 0.01pp (rounding of UI inputs)
+MIN_RISK_SPREAD = 0.005       # below 0.5pp between sigma_min and sigma_max the glide path is ~flat
+NARROW_RANGE_NOTE = ("The risk range is (almost) zero wide, so the portfolio will hardly change over "
+                     "time. Widen the gap between the lowest and highest risk to get a glide path.")
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,11 @@ def default_sigma_range(sig_minus: float, sig_plus: float) -> Tuple[float, float
     return s_min, s_max
 
 
+def is_narrow_risk_range(sigma_min: float, sigma_max: float) -> bool:
+    """True if sigma_max - sigma_min is too small for gamma_t (hence the weights) to move."""
+    return sigma_max - sigma_min < MIN_RISK_SPREAD - 1e-12
+
+
 def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str],
                             bounds: Tuple[float, float, float],
                             sigma_min: Optional[float] = None,
@@ -103,6 +111,7 @@ def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str
     """gamma_min and gamma_0 from sigma_min and sigma_max through the sigma-problem.
 
     User values are clipped to the feasible range [sigma-, sigma+]; sigma_min <= sigma_max is enforced.
+    A note is added when the range is narrower than MIN_RISK_SPREAD (the glide path is then ~flat).
     """
     sig_minus, sig_plus, _ = bounds
     d_min, d_max = default_sigma_range(sig_minus, sig_plus)
@@ -116,6 +125,8 @@ def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str
     if clipped_max < clipped_min:
         clipped_max = clipped_min
         notes.append("The maximum risk level was raised to the minimum risk level.")
+    if is_narrow_risk_range(clipped_min, clipped_max):
+        notes.append(NARROW_RANGE_NOTE)
     gamma_min, st_min = opt.solve_sigma(mu, sigma, clipped_min, tickers, bounds)
     gamma_0, st_max = opt.solve_sigma(mu, sigma, clipped_max, tickers, bounds)
     return {"sigma_min": clipped_min, "sigma_max": clipped_max, "gamma_min": gamma_min,

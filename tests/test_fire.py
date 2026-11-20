@@ -100,6 +100,29 @@ def test_glide_path_feasible_and_consistent(setup):
     assert 0.0 <= summary["p_target"] <= 1.0
 
 
+def test_default_risk_range_gives_a_moving_glide_path(setup):
+    """Regression: with the default sigma range the weights must change between today and FIRE."""
+    mu, sigma, _, gammas, W, gb = setup
+    assert not fire.is_narrow_risk_range(gb["sigma_min"], gb["sigma_max"])
+    assert gb["gamma_0"] > gb["gamma_min"] and not gb["notes"]
+    path = fire.simulate_glide_path(PROFILE, mu, sigma, TICKERS, gammas, W, gb["gamma_0"], gb["gamma_min"])
+    w = fire.weights_table(path, TICKERS)
+    assert path["gamma"].iloc[0] > path["gamma"].iloc[-1]
+    assert path["s"].iloc[0] > path["s"].iloc[-1] + 0.005               # risk falls by > 0.5pp
+    assert np.abs(w.iloc[0] - w.iloc[-1]).max() > 0.05                  # some weight moves by > 5pp
+
+
+def test_narrow_risk_range_flags_flat_glide_path(setup):
+    mu, sigma, bounds, gammas, W, _ = setup
+    sig_minus = bounds[0]
+    gb = fire.gamma_bounds_from_sigma(mu, sigma, TICKERS, bounds, sig_minus, sig_minus)
+    assert fire.NARROW_RANGE_NOTE in gb["notes"]
+    path = fire.simulate_glide_path(PROFILE, mu, sigma, TICKERS, gammas, W, gb["gamma_0"], gb["gamma_min"])
+    w = fire.weights_table(path, TICKERS)
+    assert np.abs(w.iloc[0] - w.iloc[-1]).max() < 1e-9                  # flat: the reported symptom
+    assert fire.is_narrow_risk_range(0.07, 0.074) and not fire.is_narrow_risk_range(0.07, 0.075)
+
+
 def test_validate_profile():
     errors, _ = fire.validate_profile(PROFILE.with_changes(target_age=30))
     assert errors

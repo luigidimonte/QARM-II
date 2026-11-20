@@ -156,7 +156,9 @@ def profile_rows(s) -> List[tuple]:
                                     f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
             ("Invested wealth", chf(s["wealth"]), 3),
             ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%, "
-                            f"risk-free rate {s['rf']:.2f}%", 4)]
+                            f"risk-free rate {s['rf']:.2f}%", 4),
+            ("Risk range", f"volatility {s['sig_max']:.2f}% early on, falling to {s['sig_min']:.2f}% "
+                           f"at financial independence (nominal, yearly)", 4)]
 
 
 def questionnaire(model: Dict) -> None:
@@ -228,6 +230,8 @@ def questionnaire(model: Dict) -> None:
             if s["sig_min"] > s["sig_max"]:
                 st.error("The lowest risk cannot be higher than the highest risk.")
                 ok = False
+            elif fire.is_narrow_risk_range(s["sig_min"] / 100, s["sig_max"] / 100):
+                st.warning(fire.NARROW_RANGE_NOTE)
 
         else:
             st.subheader(f"Summary{', ' + s['name'] if s['name'].strip() else ''}", anchor=False)
@@ -235,7 +239,7 @@ def questionnaire(model: Dict) -> None:
                 c1, c2, c3 = st.columns([2, 5, 1], vertical_alignment="center")
                 c1.markdown(f"**{title}**")
                 c2.write(text)
-                c3.button("Edit", key=f"edit_{target_step}", on_click=go_to, args=(target_step,))
+                c3.button("Edit", key=f"edit_{title}", on_click=go_to, args=(target_step,))
             errors, _ = fire.validate_profile(profile_from_state())
             for e in errors:
                 st.error(e)
