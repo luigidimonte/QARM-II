@@ -85,6 +85,19 @@ def run_path(model: Dict, profile: fire.ClientProfile, gb: Dict) -> pd.DataFrame
                                     model["gammas"], model["resampled"], gb["gamma_0"], gb["gamma_min"])
 
 
+def plan(model: Dict, profile: fire.ClientProfile):
+    """(gamma bounds, glide path) for the current risk range in session state."""
+    s = st.session_state
+    key = f"{model['start']}-{model['end']}-{model['T']}"
+    gb = gamma_bounds(model, key, s["sig_min"] / 100, s["sig_max"] / 100)
+    return gb, run_path(model, profile, gb)
+
+
+def real_vol(nominal_vol: float) -> float:
+    """Nominal volatility -> real volatility, with the inflation currently entered."""
+    return float(data.vol_to_real(nominal_vol, st.session_state["infl"] / 100))
+
+
 # ----------------------------------------------------------------------------- questionnaire
 STEPS = ["Welcome", "Your age", "Income and expenses", "Your wealth", "Assumptions", "Summary"]
 SUMMARY, RESULTS = len(STEPS) - 1, len(STEPS)
@@ -150,16 +163,22 @@ def profile_from_state() -> fire.ClientProfile:
                               swr=s["swr"] / 100, rf_nominal=s["rf"] / 100, inflation=s["infl"] / 100)
 
 
-def profile_rows(s) -> List[tuple]:
-    """(title, text, questionnaire step) for the answers given so far."""
+def profile_rows(s, start_vol: Optional[float] = None) -> List[tuple]:
+    """(title, text, questionnaire step) for the answers given so far.
+
+    All volatilities are real (after inflation), the same basis as the Portfolio tab;
+    start_vol is the real volatility of today's portfolio (path["s"] at the current age)."""
+    risk = (f"maximum risk setting {pct(real_vol(s['sig_max'] / 100), 2)} (real) · "
+            f"minimum risk setting {pct(real_vol(s['sig_min'] / 100), 2)} (real)")
+    if start_vol is not None:
+        risk += f" · your starting volatility {pct(start_vol, 2)} (real)"
     return [("Age", f"{s['age']} years, goal at {s['target_age']}", 1),
             ("Income and expenses", f"{chf(s['income'])} income, {chf(s['expenses'])} expenses "
                                     f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
             ("Invested wealth", chf(s["wealth"]), 3),
             ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%, "
                             f"risk-free rate {s['rf']:.2f}%", 4),
-            ("Risk range", f"volatility {s['sig_max']:.2f}% early on, falling to {s['sig_min']:.2f}% "
-                           f"at financial independence (nominal, yearly)", 4)]
+            ("Risk range", risk, 4)]
 
 
 def questionnaire(model: Dict) -> None:
@@ -236,12 +255,22 @@ def questionnaire(model: Dict) -> None:
 
         else:
             st.subheader(f"Summary{', ' + s['name'] if s['name'].strip() else ''}", anchor=False)
-            for title, text, target_step in profile_rows(s):
+            errors, _ = fire.validate_profile(profile_from_state())
+            start_vol = None
+            if not errors:
+                try:
+                    start_vol = float(plan(model, profile_from_state())[1]["s"].iloc[0])
+                except Exception:          # the results page reports plan failures
+                    pass
+            for title, text, target_step in profile_rows(s, start_vol):
                 c1, c2, c3 = st.columns([2, 5, 1], vertical_alignment="center")
                 c1.markdown(f"**{title}**")
                 c2.write(text)
                 c3.button("Edit", key=f"edit_{title}", on_click=go_to, args=(target_step,))
-            errors, _ = fire.validate_profile(profile_from_state())
+            if start_vol is not None and s["sig_max"] - s["sig_min"] > 1e-9:
+                st.caption("Your starting volatility is below the maximum risk setting when part of your "
+                           "wealth is already invested: the maximum applies only while all of it is still "
+                           "future savings.")
             for e in errors:
                 st.error(e)
             ok = not errors
@@ -358,13 +387,17 @@ def risk_chart(path: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def frontier_chart(model: Dict, path: pd.DataFrame, x_today: np.ndarray) -> go.Figure:
+def frontier_chart(model: Dict, path: pd.DataFrame, x_today: np.ndarray, inflation: float) -> go.Figure:
+    """Risk/return map in real terms (exact Fisher), the same basis as the rest of the Portfolio tab."""
     mu, sigma = model["mu"], model["sigma"]
 
-    def stats(W: np.ndarray):
-        return zip(*[opt.portfolio_stats(x, mu, sigma) for x in W])
+    def real(m: float, s: float):
+        return float(data.to_real(m, inflation)), float(data.vol_to_real(s, inflation))
 
-    hover = "Volatility %{x:.1f}%<br>Return %{y:.1f}%<extra>%{fullData.name}</extra>"
+    def stats(W: np.ndarray):
+        return zip(*[real(*opt.portfolio_stats(x, mu, sigma)) for x in W])
+
+    hover = "Volatility %{x:.1f}% (real)<br>Return %{y:.1f}% (real)<extra>%{fullData.name}</extra>"
     m_pt, s_pt = stats(model["point"])
     m_rs, s_rs = stats(model["resampled"])
     fig = go.Figure()
@@ -374,20 +407,21 @@ def frontier_chart(model: Dict, path: pd.DataFrame, x_today: np.ndarray) -> go.F
     fig.add_trace(go.Scatter(x=np.array(s_rs) * 100, y=np.array(m_rs) * 100, mode="lines",
                              name="Resampled portfolios", line=dict(dash="dash", color=STEEL, width=2.5),
                              hovertemplate=hover))
-    fig.add_trace(go.Scatter(x=np.sqrt(np.diag(sigma)) * 100, y=mu * 100, mode="markers+text",
+    fig.add_trace(go.Scatter(x=data.vol_to_real(np.sqrt(np.diag(sigma)), inflation) * 100,
+                             y=data.to_real(mu, inflation) * 100, mode="markers+text",
                              text=model["tickers"], textposition="top center", name="Single ETFs",
                              textfont=dict(color=GREY, size=11),
                              marker=dict(size=10, color=[COLORS.get(t) for t in model["tickers"]],
                                          line=dict(color=NAVY, width=0.5)),
-                             hovertemplate="%{text}<br>Volatility %{x:.1f}%<br>Return %{y:.1f}%<extra></extra>"))
-    m0, s0 = opt.portfolio_stats(x_today, mu, sigma)
+                             hovertemplate="%{text}<br>Volatility %{x:.1f}% (real)<br>Return %{y:.1f}% (real)<extra></extra>"))
+    m0, s0 = real(*opt.portfolio_stats(x_today, mu, sigma))
     x_end = fire.weights_table(path, model["tickers"]).iloc[-1].values
-    m1, s1 = opt.portfolio_stats(x_end, mu, sigma)
+    m1, s1 = real(*opt.portfolio_stats(x_end, mu, sigma))
     fig.add_trace(go.Scatter(x=[s0 * 100], y=[m0 * 100], mode="markers", name="Your portfolio today",
                              marker=dict(size=15, symbol="star", color=NAVY), hovertemplate=hover))
     fig.add_trace(go.Scatter(x=[s1 * 100], y=[m1 * 100], mode="markers", name="Your portfolio at the end",
                              marker=dict(size=12, symbol="diamond", color=ui.GOLD), hovertemplate=hover))
-    fig.update_layout(xaxis_title="Volatility (%, nominal, yearly)", yaxis_title="Expected return (%, nominal, yearly)",
+    fig.update_layout(xaxis_title="Volatility (%, real, yearly)", yaxis_title="Expected return (%, real, yearly)",
                       height=450)
     return fig
 
@@ -431,7 +465,7 @@ def tab_profile(profile: fire.ClientProfile, path: pd.DataFrame) -> None:
     w_target = float(path.loc[path["age"] == profile.target_age, "M1"].iloc[0])
 
     st.subheader("Client profile", anchor=False)
-    for title, text, _ in profile_rows(s):
+    for title, text, _ in profile_rows(s, float(path["s"].iloc[0])):
         c1, c2 = st.columns([2, 6])
         c1.markdown(f'<div class="fp-eyebrow" style="margin-top:0.2rem">{title}</div>', unsafe_allow_html=True)
         c2.write(text)
@@ -475,8 +509,8 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
     c1, c2 = st.columns([3, 2], vertical_alignment="center")
     with c1:
         ui.show_table(allocation_table(x_today, profile.wealth, tickers), {"Weight": PCT1, "Amount": chf})
-        st.caption(f"Expected return {pct(path['m'].iloc[0])} and volatility {pct(path['s'].iloc[0])} "
-                   f"per year, after inflation.")
+        st.caption(f"Expected return {pct(path['m'].iloc[0], 2)} (real) and volatility "
+                   f"{pct(path['s'].iloc[0], 2)} (real) per year, i.e. after inflation.")
     with c2:
         ui.show(donut_chart(x_today, tickers))
     st.divider()
@@ -500,7 +534,7 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
         st.divider()
 
     st.subheader("Where your portfolio sits among all possible portfolios", anchor=False)
-    ui.show(frontier_chart(model, path, x_today))
+    ui.show(frontier_chart(model, path, x_today, profile.inflation))
 
 
 def what_if(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb: Dict, summary: Dict) -> None:
@@ -667,11 +701,8 @@ def main() -> None:
     for w in warns:
         st.warning(w)
 
-    s = st.session_state
-    key = f"{model['start']}-{model['end']}-{model['T']}"
     try:
-        gb = gamma_bounds(model, key, s["sig_min"] / 100, s["sig_max"] / 100)
-        path = run_path(model, profile, gb)
+        gb, path = plan(model, profile)
     except Exception as e:
         st.error(f"The plan could not be computed ({e}).")
         st.stop()
