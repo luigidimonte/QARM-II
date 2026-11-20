@@ -33,9 +33,21 @@ def download_prices(tickers: List[str], start: str = START_DATE) -> pd.DataFrame
     raw = yf.download(tickers, start=start, auto_adjust=True, progress=False)
     if raw is None or raw.empty:
         raise RuntimeError("No price data returned by Yahoo Finance.")
-    prices = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame(name=tickers[0])
+    return close_prices(raw, tickers)
+
+
+def close_prices(raw: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
+    """Close prices with columns in the order of `tickers` (yfinance sorts them alphabetically).
+
+    Tickers without data become all-NaN columns so that validation can report them.
+    """
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw["Close"]
+    elif "Close" in raw.columns and len(tickers) == 1:
+        prices = raw[["Close"]].rename(columns={"Close": tickers[0]})
+    else:
+        prices = raw
+    prices = prices.reindex(columns=tickers)
     prices.index = pd.to_datetime(prices.index).tz_localize(None)
     return prices
 

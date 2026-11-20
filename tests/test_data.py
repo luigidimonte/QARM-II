@@ -44,6 +44,18 @@ def test_monthly_returns_drop_current_month_and_common_sample():
     assert len(rets) == 4                            # Feb..May (Jan is the base month)
 
 
+def test_close_prices_follow_requested_ticker_order():
+    days = pd.bdate_range("2020-01-01", periods=5)
+    cols = pd.MultiIndex.from_product([["Close", "Open"], sorted(TICKERS)])  # yfinance: alphabetical
+    raw = pd.DataFrame(np.arange(5 * len(cols), dtype=float).reshape(5, -1), index=days, columns=cols)
+    prices = data.close_prices(raw, TICKERS)
+    assert list(prices.columns) == TICKERS
+    for t in TICKERS:
+        pd.testing.assert_series_equal(prices[t], raw[("Close", t)], check_names=False)
+    with_missing = data.close_prices(raw, TICKERS + ["XYZ"])
+    assert with_missing["XYZ"].isna().all()
+
+
 def test_validate_returns_flags_problems(monthly):
     assert data.validate_returns(monthly, TICKERS) == []
     no_gold = [t for t in TICKERS if t != "GLD"]
