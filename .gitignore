@@ -1,2 +1,11 @@
 .venv/
 .idea/
+docs/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+.streamlit/secrets.toml
+docs/
+.venv/
+__pycache__/
