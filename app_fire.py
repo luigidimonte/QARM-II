@@ -1,6 +1,6 @@
 """FIRE planner - Streamlit UI (QARM II project).
 
-UI only: all computations live in data.py, optimizer.py and fire.py.
+UI only: all computations live in data.py, optimizer.py and fire.py; the look lives in ui_style.py.
 Run with:  streamlit run app_fire.py
 """
 from __future__ import annotations
@@ -10,24 +10,24 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 import data
 import fire
 import optimizer as opt
+import ui_style as ui
 
 # numpy 2.0.x + macOS Accelerate emits spurious FP warnings in matmul (results are correct).
 warnings.filterwarnings("ignore", message=".*encountered in matmul", category=RuntimeWarning)
 
-st.set_page_config(page_title="FIRE Planner", page_icon="🔥", layout="wide",
-                   initial_sidebar_state="collapsed")
+st.set_page_config(page_title="FIRE Planner", layout="wide", initial_sidebar_state="collapsed")
+ui.inject_css()
 
 TICKERS: List[str] = list(data.UNIVERSE)
-# white and cobalt blue theme (see .streamlit/config.toml): equities in blues, bonds in greys, gold in gold
-BLUE, BLUE_LIGHT, NAVY, GREY = "#2563EB", "#93C5FD", "#0B1F44", "#94A3B8"
-COLORS: Dict[str, str] = {"SPY": "#1E3A8A", "EWL": "#2563EB", "EEM": "#93C5FD",
-                          "IEF": "#475569", "LQD": "#CBD5E1", "GLD": "#D4A017"}
+BLUE, STEEL, NAVY, GREY = ui.BLUE, ui.STEEL, ui.NAVY, ui.GREY
+COLORS: Dict[str, str] = ui.ASSET_COLORS
 PRESETS: Dict[str, Dict] = {
     "Early career (28)": dict(age=28, income=85_000, expenses=50_000, wealth=30_000, target_age=50),
     "Mid career (40)": dict(age=40, income=150_000, expenses=85_000, wealth=400_000, target_age=55),
@@ -66,8 +66,9 @@ def build_model(rets: pd.DataFrame) -> Dict:
     gammas = opt.gamma_grid(mu_v, sig_v, tickers, bounds=bounds)
     point = opt.frontier_weights(mu_v, sig_v, gammas, tickers)
     resampled = opt.resample_weights((mu / 12).values, (sigma / 12).values, T, gammas, tickers)
+    rs_bounds = opt.resampled_frontier_bounds(gammas, resampled, sig_v)
     shrunk, delta = data.shrunk_covariance(rets, sigma)
-    return {"tickers": tickers, "mu": mu_v, "sigma": sig_v, "T": T, "bounds": bounds,
+    return {"tickers": tickers, "mu": mu_v, "sigma": sig_v, "T": T, "bounds": bounds, "rs_bounds": rs_bounds,
             "gammas": gammas, "point": point, "resampled": resampled,
             "shrunk": shrunk.values, "delta": delta,
             "start": rets.index[0], "end": rets.index[-1]}
@@ -75,13 +76,26 @@ def build_model(rets: pd.DataFrame) -> Dict:
 
 @st.cache_data(show_spinner=False)
 def gamma_bounds(_model: Dict, model_key: str, sigma_min: float, sigma_max: float) -> Dict:
-    return fire.gamma_bounds_from_sigma(_model["mu"], _model["sigma"], _model["tickers"],
-                                        _model["bounds"], sigma_min, sigma_max)
+    return fire.gamma_bounds_from_sigma(_model["sigma"], _model["gammas"], _model["resampled"],
+                                        _model["rs_bounds"], sigma_min, sigma_max)
 
 
 def run_path(model: Dict, profile: fire.ClientProfile, gb: Dict) -> pd.DataFrame:
     return fire.simulate_glide_path(profile, model["mu"], model["sigma"], model["tickers"],
                                     model["gammas"], model["resampled"], gb["gamma_0"], gb["gamma_min"])
+
+
+def plan(model: Dict, profile: fire.ClientProfile):
+    """(gamma bounds, glide path) for the current risk range in session state."""
+    s = st.session_state
+    key = f"{model['start']}-{model['end']}-{model['T']}"
+    gb = gamma_bounds(model, key, s["sig_min"] / 100, s["sig_max"] / 100)
+    return gb, run_path(model, profile, gb)
+
+
+def real_vol(nominal_vol: float) -> float:
+    """Nominal volatility -> real volatility, with the inflation currently entered."""
+    return float(data.vol_to_real(nominal_vol, st.session_state["infl"] / 100))
 
 
 # ----------------------------------------------------------------------------- questionnaire
@@ -109,12 +123,14 @@ def choose_preset(name: str) -> None:
     for k in [k for k in st.session_state.keys() if str(k).startswith("_")]:
         del st.session_state[k]                   # widgets must show the new values
     go_to(SUMMARY)
+    st.toast(f"Example client loaded: {name}")
 
 
 def reset_risk(sig_min: float, sig_max: float) -> None:
     st.session_state["sig_min"], st.session_state["sig_max"] = sig_min * 100, sig_max * 100
     st.session_state.pop("_sig_min", None)
     st.session_state.pop("_sig_max", None)
+    st.toast("Risk range reset to defaults")
 
 
 def field(widget, label_text: str, key: str, *args, **kwargs):
@@ -129,8 +145,8 @@ def field(widget, label_text: str, key: str, *args, **kwargs):
 
 
 def risk_range(model: Dict):
-    """Feasible volatility range and defaults; keeps stored values inside the range."""
-    sig_minus, sig_plus, _ = model["bounds"]
+    """Feasible volatility range (resampled portfolios) and defaults; keeps stored values inside the range."""
+    sig_minus, sig_plus, _ = model["rs_bounds"]
     d_min, d_max = fire.default_sigma_range(sig_minus, sig_plus)
     lo, hi = round(sig_minus * 100, 2), round(sig_plus * 100, 2)
     st.session_state.setdefault("sig_min", round(d_min * 100, 2))
@@ -147,25 +163,43 @@ def profile_from_state() -> fire.ClientProfile:
                               swr=s["swr"] / 100, rf_nominal=s["rf"] / 100, inflation=s["infl"] / 100)
 
 
+def profile_rows(s, start_vol: Optional[float] = None) -> List[tuple]:
+    """(title, text, questionnaire step) for the answers given so far.
+
+    All volatilities are real (after inflation), the same basis as the Portfolio tab;
+    start_vol is the real volatility of today's portfolio (path["s"] at the current age)."""
+    risk = (f"maximum risk setting {pct(real_vol(s['sig_max'] / 100), 2)} (real) · "
+            f"minimum risk setting {pct(real_vol(s['sig_min'] / 100), 2)} (real)")
+    if start_vol is not None:
+        risk += f" · your starting volatility {pct(start_vol, 2)} (real)"
+    return [("Age", f"{s['age']} years, goal at {s['target_age']}", 1),
+            ("Income and expenses", f"{chf(s['income'])} income, {chf(s['expenses'])} expenses "
+                                    f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
+            ("Invested wealth", chf(s["wealth"]), 3),
+            ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%, "
+                            f"risk-free rate {s['rf']:.2f}%", 4),
+            ("Risk range", risk, 4)]
+
+
 def questionnaire(model: Dict) -> None:
     """One question per screen, then a summary; the results are shown after the last step."""
     s = st.session_state
     step = s["step"]
-    st.progress(step / SUMMARY, text=f"Step {step + 1} of {len(STEPS)}: {STEPS[step]}")
+    st.progress(step / SUMMARY, text=f"Step {step + 1} of {len(STEPS)}  ·  {STEPS[step]}")
     ok = True
     with st.container(border=True):
         if step == 0:
-            st.subheader("Welcome!")
+            st.subheader("Welcome", anchor=False)
             st.write("**FIRE** means *Financial Independence, Retire Early*: saving and investing enough "
                      "to live on your investments and stop depending on a salary. Answer a few questions "
                      "and we will show you how likely you are to get there, and how to invest on the way.")
             field(st.text_input, "What is your name?", "name", placeholder="Optional")
-            st.caption("Or start from an example client:")
+            st.caption("Or start from an example client.")
             for col, name in zip(st.columns(len(PRESETS)), PRESETS):
                 col.button(name, on_click=choose_preset, args=(name,), width="stretch")
 
         elif step == 1:
-            st.subheader("Your age")
+            st.subheader("Your age", anchor=False)
             age = field(st.slider, "How old are you?", "age", 18, 75)
             target = field(st.slider, "At what age would you like to be financially independent?",
                            "target_age", 19, 80)
@@ -176,7 +210,7 @@ def questionnaire(model: Dict) -> None:
                 st.info(f"Your goal is **{target - age} years** from now.")
 
         elif step == 2:
-            st.subheader("Income and expenses")
+            st.subheader("Income and expenses", anchor=False)
             income = field(st.number_input, "Net yearly income (CHF)", "income", 0, 500_000, step=1_000)
             expenses = field(st.number_input, "Yearly expenses (CHF)", "expenses", 5_000, 300_000, step=1_000,
                              help="Also the yearly spending you want to sustain once financially independent.")
@@ -187,7 +221,7 @@ def questionnaire(model: Dict) -> None:
                 st.warning("You are not saving anything: wealth can only grow through returns.")
 
         elif step == 3:
-            st.subheader("Your wealth")
+            st.subheader("Your wealth", anchor=False)
             wealth = field(st.number_input, "How much have you already invested (CHF)?", "wealth",
                            0, 5_000_000, step=10_000)
             if wealth <= 0 and s["income"] <= s["expenses"]:
@@ -196,18 +230,18 @@ def questionnaire(model: Dict) -> None:
                 ok = False
 
         elif step == 4:
-            st.subheader("Assumptions")
-            st.write("These values are already set to sensible defaults: you can simply continue.")
+            st.subheader("Assumptions", anchor=False)
+            st.write("These values are already set to sensible defaults; you can simply continue.")
             field(st.slider, "Safe withdrawal rate (%)", "swr", 2.5, 6.0, step=0.25,
                   help="Share of your wealth you plan to spend each year once independent.")
             field(st.slider, "Expected inflation (%)", "infl", 0.0, 5.0, step=0.25)
             field(st.slider, "Risk-free rate (%, nominal)", "rf", 0.0, 5.0, step=0.25)
             st.info(f"**Portfolio rules (fixed)**  \n"
-                    f"• at most {opt.CONFIG['max_weight']:.0%} in any single ETF  \n"
-                    f"• at least {opt.CONFIG['min_gold']:.0%} in gold  \n"
-                    f"• fully invested, no short selling")
+                    f"At most {opt.CONFIG['max_weight']:.0%} in any single ETF.  \n"
+                    f"At least {opt.CONFIG['min_gold']:.0%} in gold.  \n"
+                    f"Fully invested, no short selling.")
             lo, hi, d_min, d_max = risk_range(model)
-            with st.expander("Advanced: risk range (for experts)"):
+            with st.expander("Advanced: risk range"):
                 st.caption(f"Feasible volatility with the portfolio rules: **{lo:.2f}% - {hi:.2f}%** "
                            f"(nominal, yearly).")
                 field(st.slider, "Lowest risk (volatility at / after FIRE, %)", "sig_min", lo, hi, step=0.05)
@@ -216,30 +250,36 @@ def questionnaire(model: Dict) -> None:
             if s["sig_min"] > s["sig_max"]:
                 st.error("The lowest risk cannot be higher than the highest risk.")
                 ok = False
+            elif fire.is_narrow_risk_range(s["sig_min"] / 100, s["sig_max"] / 100):
+                st.warning(fire.NARROW_RANGE_NOTE)
 
         else:
-            st.subheader(f"Summary{', ' + s['name'] if s['name'].strip() else ''}")
-            rows = [("Your age", f"{s['age']} years, goal at {s['target_age']}", 1),
-                    ("Income and expenses", f"{chf(s['income'])} income, {chf(s['expenses'])} expenses "
-                                            f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
-                    ("Your wealth", chf(s["wealth"]), 3),
-                    ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%, "
-                                    f"risk-free rate {s['rf']:.2f}%", 4)]
-            for title, text, target_step in rows:
-                c1, c2, c3 = st.columns([2, 5, 1])
+            st.subheader(f"Summary{', ' + s['name'] if s['name'].strip() else ''}", anchor=False)
+            errors, _ = fire.validate_profile(profile_from_state())
+            start_vol = None
+            if not errors:
+                try:
+                    start_vol = float(plan(model, profile_from_state())[1]["s"].iloc[0])
+                except Exception:          # the results page reports plan failures
+                    pass
+            for title, text, target_step in profile_rows(s, start_vol):
+                c1, c2, c3 = st.columns([2, 5, 1], vertical_alignment="center")
                 c1.markdown(f"**{title}**")
                 c2.write(text)
-                c3.button("Edit", key=f"edit_{target_step}", on_click=go_to, args=(target_step,))
-            errors, _ = fire.validate_profile(profile_from_state())
+                c3.button("Edit", key=f"edit_{title}", on_click=go_to, args=(target_step,))
+            if start_vol is not None and s["sig_max"] - s["sig_min"] > 1e-9:
+                st.caption("Your starting volatility is below the maximum risk setting when part of your "
+                           "wealth is already invested: the maximum applies only while all of it is still "
+                           "future savings.")
             for e in errors:
                 st.error(e)
             ok = not errors
 
     back, nxt, _ = st.columns([1, 1, 4])
     if step > 0:
-        back.button("← Back", on_click=go_to, args=(step - 1,), width="stretch")
+        back.button("Back", on_click=go_to, args=(step - 1,), width="stretch")
     if step < SUMMARY:
-        nxt.button("Next →", type="primary", disabled=not ok, on_click=go_to, args=(step + 1,),
+        nxt.button("Next", type="primary", disabled=not ok, on_click=go_to, args=(step + 1,),
                    width="stretch")
     else:
         nxt.button("Show my plan", type="primary", disabled=not ok, on_click=go_to, args=(RESULTS,),
@@ -247,31 +287,39 @@ def questionnaire(model: Dict) -> None:
 
 
 # ----------------------------------------------------------------------------- charts
+HOVER_PCT = "Age %{x}<br>%{y:.1f}%<extra>%{fullData.name}</extra>"
+
+
 def prob_chart(paths: Dict[str, pd.DataFrame], target_ages: Dict[str, int]) -> go.Figure:
     fig = go.Figure()
     for i, (name, path) in enumerate(paths.items()):
         fig.add_trace(go.Scatter(x=path["age"], y=path["P"] * 100, name=name, mode="lines+markers",
-                                 line=dict(width=3 if i == 0 else 2, dash=None if i == 0 else "dash",
-                                           color=BLUE if i == 0 else BLUE_LIGHT)))
+                                 line=dict(width=2.5 if i == 0 else 2, dash=None if i == 0 else "dash",
+                                           color=BLUE if i == 0 else STEEL),
+                                 marker=dict(size=5), hovertemplate=HOVER_PCT))
     for lv in fire.PROB_LEVELS:
-        fig.add_hline(y=lv * 100, line=dict(color="grey", width=1, dash="dot"),
-                      annotation_text=f"{lv:.0%}", annotation_position="right")
+        fig.add_hline(y=lv * 100, line=dict(color=ui.LINE, width=1, dash="dot"),
+                      annotation_text=f"{lv:.0%}", annotation_position="right",
+                      annotation_font=dict(color=GREY, size=11))
     for i, (name, age) in enumerate(target_ages.items()):
-        fig.add_vline(x=age, line=dict(color=NAVY if i == 0 else GREY, width=1, dash="dash"),
+        fig.add_vline(x=age, line=dict(color=NAVY if i == 0 else STEEL, width=1, dash="dash"),
                       annotation_text=f"target {age}" if i == 0 else f"alt. target {age}",
-                      annotation_position="top left" if i == 0 else "bottom right")
+                      annotation_position="top left" if i == 0 else "bottom right",
+                      annotation_font=dict(color=GREY, size=11))
     fig.update_layout(xaxis_title="Age", yaxis_title="Chance of being financially independent (%)",
-                      yaxis_range=[0, 102], height=420, legend=dict(orientation="h", y=-0.2),
-                      margin=dict(t=30))
+                      yaxis_range=[0, 102], height=420)
     return fig
 
 
 def wealth_chart(path: pd.DataFrame, K: float) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=path["age"], y=path["M1"], name="Expected wealth", mode="lines",
-                             line=dict(width=3, color=BLUE), fill="tozeroy", fillcolor="rgba(37, 99, 235, 0.08)"))
-    fig.add_hline(y=K, line=dict(color=NAVY, dash="dash"), annotation_text=f"FIRE capital {chf(K)}")
-    fig.update_layout(xaxis_title="Age", yaxis_title="CHF (today's money)", height=380, margin=dict(t=30))
+                             line=dict(width=2.5, color=BLUE), fill="tozeroy",
+                             fillcolor="rgba(10, 61, 145, 0.06)",
+                             hovertemplate="Age %{x}<br>CHF %{y:,.0f}<extra></extra>"))
+    fig.add_hline(y=K, line=dict(color=NAVY, width=1, dash="dash"), annotation_text=f"FIRE capital {chf(K)}",
+                  annotation_font=dict(color=GREY, size=11))
+    fig.update_layout(xaxis_title="Age", yaxis_title="CHF (today's money)", height=380, showlegend=False)
     return fig
 
 
@@ -280,58 +328,121 @@ def area_chart(weights: pd.DataFrame, x_title: str, x=None) -> go.Figure:
     xs = weights.index if x is None else x
     for t in weights.columns:
         fig.add_trace(go.Scatter(x=xs, y=weights[t] * 100, name=label(t), stackgroup="one",
-                                 mode="lines", line=dict(width=0.5, color=COLORS.get(t))))
+                                 mode="lines", line=dict(width=0.5, color=COLORS.get(t)),
+                                 fillcolor=COLORS.get(t),
+                                 hovertemplate=f"{t}  %{{y:.1f}}%<extra></extra>"))
     fig.update_layout(xaxis_title=x_title, yaxis_title="Weight (%)", yaxis_range=[0, 100],
-                      height=400, legend=dict(orientation="h", y=-0.25), margin=dict(t=30))
+                      height=400, hovermode="x unified", legend=dict(y=-0.25))
+    return fig
+
+
+def glide_chart(weights: pd.DataFrame) -> go.Figure:
+    """Animated glide path: portfolio weights by ETF, one frame per year of age."""
+    long = (weights.rename_axis("age").reset_index()
+            .melt(id_vars="age", var_name="ETF", value_name="weight"))
+    long["weight"] *= 100
+    long["asset"] = long["ETF"].map(data.UNIVERSE)
+    tickers = list(weights.columns)
+    fig = px.bar(long, x="ETF", y="weight", color="ETF", animation_frame="age",
+                 color_discrete_map=COLORS, category_orders={"ETF": tickers},
+                 custom_data=["asset"], range_y=[0, max(45.0, long["weight"].max() * 1.1)],
+                 labels={"weight": "Weight (%)", "ETF": "", "age": "Age"}, template="fire")
+    hover = "%{customdata[0]} (%{x})<br>%{y:.1f}%<extra></extra>"
+    fig.update_traces(hovertemplate=hover, marker_line=ui.OUTLINE, width=0.6)
+    for fr in fig.frames:
+        for d in fr.data:
+            d.hovertemplate = hover
+            d.marker.line = ui.OUTLINE
+            d.width = 0.6
+    menu = fig.layout.updatemenus[0]
+    menu.buttons[0].args[1]["frame"]["duration"] = 450
+    menu.buttons[0].args[1]["transition"]["duration"] = 300
+    menu.update(x=0, y=-0.12, xanchor="left", yanchor="top", pad=dict(t=0, r=10),
+                bgcolor="#FFFFFF", bordercolor=ui.LINE, font=dict(color=NAVY, size=12))
+    menu.buttons[0].label, menu.buttons[1].label = "Play", "Pause"
+    slider = fig.layout.sliders[0]
+    slider.update(x=0.14, len=0.86, y=-0.08, pad=dict(t=0, b=0), bordercolor=ui.LINE, bgcolor=ui.MIST,
+                  activebgcolor=BLUE, tickcolor=ui.LINE, font=dict(size=10, color=GREY),
+                  currentvalue=dict(prefix="Age ", font=dict(size=13, color=NAVY), xanchor="left"),
+                  transition=dict(duration=300))
+    fig.update_layout(showlegend=False, height=440, margin=dict(t=30, b=90),
+                      yaxis_title="Weight (%)", xaxis_title=None)
     return fig
 
 
 def risk_chart(path: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=path["age"], y=path["s"] * 100, name="Expected volatility (real, %)",
-                             mode="lines", line=dict(width=3, color=BLUE)))
+                             mode="lines", line=dict(width=2.5, color=BLUE), hovertemplate=HOVER_PCT))
     fig.add_trace(go.Scatter(x=path["age"], y=path["m"] * 100, name="Expected return (real, %)",
-                             mode="lines", line=dict(width=3, dash="dash", color=BLUE_LIGHT)))
+                             mode="lines", line=dict(width=2.5, dash="dash", color=STEEL),
+                             hovertemplate=HOVER_PCT))
     fig.add_trace(go.Scatter(x=path["age"], y=path["gamma"], name="Risk tolerance γₜ (right axis)",
-                             mode="lines", line=dict(color=GREY), yaxis="y2"))
-    fig.update_layout(xaxis_title="Age", yaxis_title="%", height=380, margin=dict(t=30),
-                      yaxis2=dict(title="γₜ", overlaying="y", side="right", showgrid=False),
-                      legend=dict(orientation="h", y=-0.25))
+                             mode="lines", line=dict(width=1.5, color=ui.GOLD), yaxis="y2",
+                             hovertemplate="Age %{x}<br>γ %{y:.3f}<extra></extra>"))
+    fig.update_layout(xaxis_title="Age", yaxis_title="%", height=380,
+                      yaxis2=dict(title=dict(text="γₜ", font=dict(color=GREY, size=12)), overlaying="y",
+                                  side="right", showgrid=False, zeroline=False),
+                      legend=dict(y=-0.25))
     return fig
 
 
-def frontier_chart(model: Dict, path: pd.DataFrame, x_today: np.ndarray) -> go.Figure:
+def frontier_chart(model: Dict, path: pd.DataFrame, x_today: np.ndarray, inflation: float) -> go.Figure:
+    """Risk/return map in real terms (exact Fisher), the same basis as the rest of the Portfolio tab."""
     mu, sigma = model["mu"], model["sigma"]
 
-    def stats(W: np.ndarray):
-        return zip(*[opt.portfolio_stats(x, mu, sigma) for x in W])
+    def real(m: float, s: float):
+        return float(data.to_real(m, inflation)), float(data.vol_to_real(s, inflation))
 
+    def stats(W: np.ndarray):
+        return zip(*[real(*opt.portfolio_stats(x, mu, sigma)) for x in W])
+
+    hover = "Volatility %{x:.1f}% (real)<br>Return %{y:.1f}% (real)<extra>%{fullData.name}</extra>"
     m_pt, s_pt = stats(model["point"])
     m_rs, s_rs = stats(model["resampled"])
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=np.array(s_pt) * 100, y=np.array(m_pt) * 100, mode="lines",
-                             name="Constrained efficient frontier", line=dict(color=BLUE, width=3)))
+                             name="Constrained efficient frontier", line=dict(color=BLUE, width=2.5),
+                             hovertemplate=hover))
     fig.add_trace(go.Scatter(x=np.array(s_rs) * 100, y=np.array(m_rs) * 100, mode="lines",
-                             name="Resampled portfolios", line=dict(dash="dash", color=BLUE_LIGHT, width=3)))
-    fig.add_trace(go.Scatter(x=np.sqrt(np.diag(sigma)) * 100, y=mu * 100, mode="markers+text",
+                             name="Resampled portfolios", line=dict(dash="dash", color=STEEL, width=2.5),
+                             hovertemplate=hover))
+    fig.add_trace(go.Scatter(x=data.vol_to_real(np.sqrt(np.diag(sigma)), inflation) * 100,
+                             y=data.to_real(mu, inflation) * 100, mode="markers+text",
                              text=model["tickers"], textposition="top center", name="Single ETFs",
-                             marker=dict(size=9, color=[COLORS.get(t) for t in model["tickers"]])))
-    m0, s0 = opt.portfolio_stats(x_today, mu, sigma)
+                             textfont=dict(color=GREY, size=11),
+                             marker=dict(size=10, color=[COLORS.get(t) for t in model["tickers"]],
+                                         line=dict(color=NAVY, width=0.5)),
+                             hovertemplate="%{text}<br>Volatility %{x:.1f}% (real)<br>Return %{y:.1f}% (real)<extra></extra>"))
+    m0, s0 = real(*opt.portfolio_stats(x_today, mu, sigma))
     x_end = fire.weights_table(path, model["tickers"]).iloc[-1].values
-    m1, s1 = opt.portfolio_stats(x_end, mu, sigma)
+    m1, s1 = real(*opt.portfolio_stats(x_end, mu, sigma))
     fig.add_trace(go.Scatter(x=[s0 * 100], y=[m0 * 100], mode="markers", name="Your portfolio today",
-                             marker=dict(size=16, symbol="star", color=NAVY)))
+                             marker=dict(size=15, symbol="star", color=NAVY), hovertemplate=hover))
     fig.add_trace(go.Scatter(x=[s1 * 100], y=[m1 * 100], mode="markers", name="Your portfolio at the end",
-                             marker=dict(size=13, symbol="diamond", color=GREY)))
-    fig.update_layout(xaxis_title="Volatility (%, nominal, yearly)", yaxis_title="Expected return (%, nominal, yearly)",
-                      height=450, legend=dict(orientation="h", y=-0.2), margin=dict(t=30))
+                             marker=dict(size=12, symbol="diamond", color=ui.GOLD), hovertemplate=hover))
+    fig.update_layout(xaxis_title="Volatility (%, real, yearly)", yaxis_title="Expected return (%, real, yearly)",
+                      height=450)
+    return fig
+
+
+def donut_chart(x: np.ndarray, tickers: List[str]) -> go.Figure:
+    fig = go.Figure(go.Pie(labels=tickers, values=x, hole=0.62, sort=False, direction="clockwise",
+                           marker=dict(colors=[COLORS.get(t) for t in tickers], line=ui.OUTLINE),
+                           textinfo="label", textfont=dict(size=11),
+                           customdata=[data.UNIVERSE[t] for t in tickers],
+                           hovertemplate="%{customdata} (%{label})<br>%{value:.1%}<extra></extra>"))
+    fig.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
     return fig
 
 
 # ----------------------------------------------------------------------------- tables
+PCT1 = "{:.1%}".format
+
+
 def allocation_table(x: np.ndarray, wealth: float, tickers: List[str]) -> pd.DataFrame:
     return pd.DataFrame({"ETF": tickers, "Asset class": [data.UNIVERSE[t] for t in tickers],
-                         "Weight": [pct(w) for w in x], "Amount": [chf(w * wealth) for w in x]})
+                         "Weight": list(x), "Amount": [w * wealth for w in x]})
 
 
 def trade_table(row: pd.Series, tickers: List[str]) -> pd.DataFrame:
@@ -339,70 +450,96 @@ def trade_table(row: pd.Series, tickers: List[str]) -> pd.DataFrame:
     for t in tickers:
         amt = row[f"trade_amt_{t}"]
         out.append({"ETF": t, "Asset class": data.UNIVERSE[t],
-                    "Weight after one year of market moves": pct(row[f"drift_{t}"]),
-                    "New target weight": pct(row[f"w_{t}"]),
-                    "Change (pp)": f"{row[f'trade_pct_{t}'] * 100:+.1f}",
-                    "Trade": ("Buy " if amt >= 0 else "Sell ") + chf(abs(amt))})
+                    "Weight after one year of market moves": row[f"drift_{t}"],
+                    "New target weight": row[f"w_{t}"],
+                    "Change (pp)": row[f"trade_pct_{t}"] * 100,
+                    "Trade": "Buy" if amt >= 0 else "Sell",
+                    "Amount": abs(amt)})
     return pd.DataFrame(out)
 
 
 # ----------------------------------------------------------------------------- tabs
-def tab_plan(profile: fire.ClientProfile, path: pd.DataFrame, summary: Dict) -> None:
+def tab_profile(profile: fire.ClientProfile, path: pd.DataFrame) -> None:
+    s = st.session_state
     K = fire.fire_target(profile.expenses, profile.swr)
     w_target = float(path.loc[path["age"] == profile.target_age, "M1"].iloc[0])
+
+    st.subheader("Client profile", anchor=False)
+    for title, text, _ in profile_rows(s, float(path["s"].iloc[0])):
+        c1, c2 = st.columns([2, 6])
+        c1.markdown(f'<div class="fp-eyebrow" style="margin-top:0.2rem">{title}</div>', unsafe_allow_html=True)
+        c2.write(text)
+    st.divider()
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Capital needed for FIRE", chf(K), help="Yearly expenses / safe withdrawal rate")
-    c2.metric(f"Chance of FIRE by {profile.target_age}", pct(summary["p_target"], 0))
-    c3.metric(f"Expected wealth at {profile.target_age}", chf(w_target),
+    c2.metric("Yearly savings", chf(profile.savings))
+    c3.metric("Savings rate", pct(profile.savings / profile.income, 0) if profile.income > 0 else "-")
+    c4.metric(f"Expected wealth at {profile.target_age}", chf(w_target),
               delta=chf(w_target - K) + " vs target")
-    c4.metric("Yearly savings", chf(profile.savings))
+    st.divider()
 
+    st.subheader("Expected wealth", anchor=False)
+    ui.show(wealth_chart(path, K))
+    st.caption("Expected wealth in today's money, assuming the same yearly savings until the target age.")
+
+
+def tab_probability(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb: Dict,
+                    summary: Dict) -> None:
     ages = summary["ages"]
-    parts = [f"**{lv:.0%}** by age **{ages[lv]}**" if ages[lv] else f"**{lv:.0%}** not before {int(path['age'].iloc[-1])}"
-             for lv in fire.PROB_LEVELS]
-    st.markdown("Chance of being financially independent: " + " · ".join(parts) + ".")
-    st.plotly_chart(prob_chart({"Your plan": path}, {"Your plan": profile.target_age}))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"Chance of FIRE by {profile.target_age}", pct(summary["p_target"], 0))
+    for col, lv in zip((c2, c3, c4), fire.PROB_LEVELS):
+        col.metric(f"Age with {lv:.0%} chance", str(ages[lv]) if ages[lv] else
+                   f"after {int(path['age'].iloc[-1])}")
+    st.divider()
+    st.subheader("Chance of being financially independent", anchor=False)
+    ui.show(prob_chart({"Your plan": path}, {"Your plan": profile.target_age}))
     st.caption("Each point is the chance that your wealth is at least the FIRE capital at that age, "
                "if you keep saving the same amount (in today's money) every year.")
-    st.subheader("Expected wealth")
-    st.plotly_chart(wealth_chart(path, K))
+    st.divider()
+    what_if(model, profile, path, gb, summary)
 
 
 def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) -> None:
     tickers = model["tickers"]
     W = fire.weights_table(path, tickers)
     x_today = W.iloc[0].values
-    st.subheader("Your portfolio today")
-    c1, c2 = st.columns([3, 2])
+    st.subheader("Your portfolio today", anchor=False)
+    c1, c2 = st.columns([3, 2], vertical_alignment="center")
     with c1:
-        st.dataframe(allocation_table(x_today, profile.wealth, tickers), hide_index=True, width="stretch")
-        st.caption(f"Expected return {pct(path['m'].iloc[0])} and volatility {pct(path['s'].iloc[0])} "
-                   f"per year, after inflation.")
+        ui.show_table(allocation_table(x_today, profile.wealth, tickers), {"Weight": PCT1, "Amount": chf})
+        st.caption(f"Expected return {pct(path['m'].iloc[0], 2)} (real) and volatility "
+                   f"{pct(path['s'].iloc[0], 2)} (real) per year, i.e. after inflation.")
     with c2:
-        fig = go.Figure(go.Pie(labels=tickers, values=x_today, hole=0.5, sort=False,
-                               marker=dict(colors=[COLORS.get(t) for t in tickers])))
-        fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False)
-        st.plotly_chart(fig)
+        ui.show(donut_chart(x_today, tickers))
+    st.divider()
 
-    st.subheader("How the portfolio changes over time")
-    st.plotly_chart(area_chart(W, "Age"))
+    st.subheader("How the portfolio changes over time", anchor=False)
+    st.caption("Press Play to follow the target weights year by year, or drag the slider to a given age.")
+    ui.show(glide_chart(W))
     st.caption("While most of your future savings are still ahead, the portfolio takes more risk. "
                "As your wealth grows towards the FIRE capital it becomes more defensive.")
-    st.plotly_chart(risk_chart(path))
+    ui.show(risk_chart(path))
+    st.divider()
 
     if len(path) > 1:
         row = path.iloc[1]
-        st.subheader(f"Rebalancing after the first year (age {int(row['age'])})")
-        st.dataframe(trade_table(row, tickers), hide_index=True, width="stretch")
+        st.subheader(f"Rebalancing after the first year (age {int(row['age'])})", anchor=False)
+        ui.show_table(trade_table(row, tickers),
+                      {"Weight after one year of market moves": PCT1, "New target weight": PCT1,
+                       "Change (pp)": "{:+.1f}".format, "Amount": chf})
         st.caption(f"Trades bring the portfolio back to its new target and invest this year's savings "
                    f"({chf(profile.savings)}); amounts in today's money, on the expected path, no transaction costs.")
+        st.divider()
 
-    st.subheader("Where your portfolio sits among all possible portfolios")
-    st.plotly_chart(frontier_chart(model, path, x_today))
+    st.subheader("Where your portfolio sits among all possible portfolios", anchor=False)
+    ui.show(frontier_chart(model, path, x_today, profile.inflation))
 
 
-def tab_what_if(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb: Dict, summary: Dict) -> None:
-    st.write("Change one or two levers and compare with your current plan.")
+def what_if(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb: Dict, summary: Dict) -> None:
+    st.subheader("What if", anchor=False)
+    st.caption("Change one or two levers and compare with your current plan.")
     base_rate = profile.savings / profile.income if profile.income > 0 else 0.0
     min_age = min(profile.age + 1, 80)
     st.session_state.setdefault("wi_rate", int(round(min(max(base_rate, 0.0), 0.9) * 100)))
@@ -415,8 +552,8 @@ def tab_what_if(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb
     alt = profile.with_changes(expenses=max(profile.income * (1 - alt_rate), 1.0), target_age=alt_age)
     alt_path = run_path(model, alt, gb)
     alt_summary = fire.fire_summary(alt_path, alt.target_age)
-    st.plotly_chart(prob_chart({"Current plan": path, "Alternative": alt_path},
-                               {"Current plan": profile.target_age, "Alternative": alt.target_age}))
+    ui.show(prob_chart({"Current plan": path, "Alternative": alt_path},
+                       {"Current plan": profile.target_age, "Alternative": alt.target_age}))
 
     def col(p: fire.ClientProfile, s: Dict) -> List[str]:
         a = s["ages"]
@@ -426,8 +563,8 @@ def tab_what_if(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb
 
     idx = ["Savings rate", "Yearly expenses", "FIRE capital", "Target age", "Chance by target age"] + \
           [f"Age with {lv:.0%} chance" for lv in fire.PROB_LEVELS]
-    st.dataframe(pd.DataFrame({"Current plan": col(profile, summary), "Alternative": col(alt, alt_summary)},
-                              index=idx), width="stretch")
+    st.table(pd.DataFrame({"Current plan": col(profile, summary), "Alternative": col(alt, alt_summary)},
+                          index=idx))
 
 
 def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, gb: Dict) -> None:
@@ -440,11 +577,11 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
                  f"{model['start']:%b %Y} - {model['end']:%b %Y} (T = {model['T']} months, common sample). "
                  f"μ = 12 × monthly mean, Σ = 12 × monthly covariance (nominal).")
         vol = np.sqrt(np.diag(sigma))
-        st.dataframe(pd.DataFrame({"Asset class": [data.UNIVERSE[t] for t in tickers],
-                                   "Expected return": [pct(m) for m in mu], "Volatility": [pct(v) for v in vol]},
-                                  index=tickers), width="stretch")
-        st.dataframe(pd.DataFrame(sigma / np.outer(vol, vol), index=tickers, columns=tickers).round(2),
-                     width="stretch")
+        ui.show_table(pd.DataFrame({"Asset class": [data.UNIVERSE[t] for t in tickers],
+                                    "Expected return": mu, "Volatility": vol}, index=tickers),
+                      {"Expected return": PCT1, "Volatility": PCT1}, hide_index=False)
+        ui.show_table(pd.DataFrame(sigma / np.outer(vol, vol), index=tickers, columns=tickers),
+                      {t: "{:.2f}".format for t in tickers}, hide_index=False)
         st.markdown("**Assumptions.** Single currency, FX ignored. Real terms with the exact Fisher relation "
                     "(1+R)/(1+π) − 1, also applied to r_f. Savings constant in real terms, added at the end of "
                     "each year. No transaction costs.")
@@ -457,7 +594,9 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
                  f"(reached at γ ≈ {gamma_hi:.3g}). No closed form because of the bounds: solved as a QP with cvxpy. "
                  f"Using excess returns μ − r_f·1 (LN 2/3) gives the same x* because 1ᵀx = 1, so r_f and inflation "
                  f"do not change the optimal weights.")
-        st.write(f"σ-problem: γ such that σ(x*(γ)) = σ*, solved with Brent's method. "
+        st.write(f"σ-problem: γ such that the resampled portfolio at γ (see below), evaluated with the "
+                 f"original μ̂ and Σ̂, has volatility σ*; solved with Brent's method, so the portfolios "
+                 f"actually held hit the risk targets exactly. "
                  f"σ_min = {pct(gb['sigma_min'], 2)} → γ_min = {gb['gamma_min']:.4f}; "
                  f"σ_max = {pct(gb['sigma_max'], 2)} → γ₀ = {gb['gamma_0']:.4f}.")
 
@@ -469,10 +608,12 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
                  f"interpolations of feasible portfolios satisfy the same linear constraints.")
         vols = [opt.portfolio_stats(x, mu, sigma)[1] * 100 for x in model["point"]]
         c1, c2 = st.columns(2)
-        c1.markdown("Constrained Markowitz composition map")
-        c1.plotly_chart(area_chart(pd.DataFrame(model["point"], columns=tickers), "Volatility (%)", x=vols))
-        c2.markdown("Resampled composition map")
-        c2.plotly_chart(area_chart(pd.DataFrame(model["resampled"], columns=tickers), "Volatility (%)", x=vols))
+        with c1:
+            st.markdown("Constrained Markowitz composition map")
+            ui.show(area_chart(pd.DataFrame(model["point"], columns=tickers), "Volatility (%)", x=vols))
+        with c2:
+            st.markdown("Resampled composition map")
+            ui.show(area_chart(pd.DataFrame(model["resampled"], columns=tickers), "Volatility (%)", x=vols))
 
     with st.expander("Dynamic risk tolerance"):
         st.latex(r"H_t=c\,\frac{1-(1+r_f)^{-h_t}}{r_f},\qquad "
@@ -481,9 +622,10 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
         st.write(f"H_t is the value today of the savings still to come before the target date (real r_f = "
                  f"{pct(profile.rf_real, 2)}). W_t is the expected wealth on the planned path. Each year: "
                  f"(W_t, h_t) → H_t → γ_t → resampled constrained portfolio → trades.")
-        st.dataframe(path[["age", "W", "H", "gamma", "m", "s"]].rename(
-            columns={"W": "W_t", "H": "H_t", "gamma": "γ_t", "m": "μ_p (real)", "s": "σ_p (real)"}).round(4),
-            hide_index=True, width="stretch")
+        ui.show_table(path[["age", "W", "H", "gamma", "m", "s"]].rename(
+            columns={"W": "W_t", "H": "H_t", "gamma": "γ_t", "m": "μ_p (real)", "s": "σ_p (real)"}),
+            {"age": "{:.0f}".format, "W_t": chf, "H_t": chf, "γ_t": "{:.4f}".format,
+             "μ_p (real)": PCT1, "σ_p (real)": PCT1})
 
     with st.expander("Probability of FIRE (project assumption, not from the course)"):
         st.latex(r"M_1'=M_1(1+m_t)+c,\quad M_2'=M_2\big((1+m_t)^2+s_t^2\big)+2c(1+m_t)M_1+c^2")
@@ -505,15 +647,15 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
         for name, S in (("Sample Σ", sigma), ("Shrunk Σ", model["shrunk"])):
             rows[f"Min. variance - {name}"] = opt.solve_gamma(mu, S, 0.0, tickers)
             rows[f"γ today = {g_today:.3f} - {name}"] = opt.solve_gamma(mu, S, g_today, tickers)
-        st.dataframe(pd.DataFrame(rows, index=tickers).T.map(lambda v: pct(v)), width="stretch")
+        ui.show_table(pd.DataFrame(rows, index=tickers).T, {t: PCT1 for t in tickers}, hide_index=False)
 
 
 # ----------------------------------------------------------------------------- main
 def main() -> None:
     init_state()
-    st.title("🔥 FIRE Planner")
-    st.caption("When can you stop depending on a salary? A plan that invests your savings in six ETFs "
-               "and lowers its risk as you get closer to financial independence.")
+    ui.header("FIRE Planner",
+              "When can you stop depending on a salary? A plan that invests your savings in six ETFs "
+              "and lowers its risk as you get closer to financial independence.")
 
     try:
         opt.check_feasibility(TICKERS)
@@ -521,7 +663,7 @@ def main() -> None:
         st.error(f"The investment universe cannot satisfy the portfolio rules: {e}")
         st.stop()
     try:
-        with st.spinner("Downloading the latest market data..."):
+        with st.spinner("Retrieving market data"):
             rets = load_returns(tuple(TICKERS))
     except Exception as e:  # network / provider problems
         st.error(f"Market data could not be downloaded right now ({type(e).__name__}). Please try again in a minute.")
@@ -531,7 +673,7 @@ def main() -> None:
         st.error("The market data is not usable: " + " ".join(problems))
         st.stop()
     try:
-        with st.spinner("Building the portfolios (first run only, a few seconds)..."):
+        with st.spinner("Estimating portfolios. This takes a few seconds on first run."):
             model = build_model(rets)
     except Exception as e:
         st.error(f"The portfolio optimisation failed ({e}). Please reload the page.")
@@ -543,11 +685,12 @@ def main() -> None:
         st.stop()
 
     name = st.session_state["name"].strip()
-    top1, top2, _ = st.columns([1, 1, 4])
-    top1.button("✏️ Change my answers", on_click=go_to, args=(SUMMARY,), width="stretch")
-    top2.button("↺ Start over", on_click=go_to, args=(0,), width="stretch")
+    head, top1, top2 = st.columns([4, 1, 1], vertical_alignment="bottom")
+    head.markdown(f'<div class="fp-eyebrow">Your plan</div>', unsafe_allow_html=True)
     if name:
-        st.subheader(f"{name}, here is your plan")
+        head.subheader(f"{name}, here is your plan", anchor=False)
+    top1.button("Change my answers", on_click=go_to, args=(SUMMARY,), width="stretch")
+    top2.button("Start over", on_click=go_to, args=(0,), width="stretch")
 
     profile = profile_from_state()
     errors, warns = fire.validate_profile(profile)
@@ -558,11 +701,8 @@ def main() -> None:
     for w in warns:
         st.warning(w)
 
-    s = st.session_state
-    key =f"{model['start']}-{model['end']}-{model['T']}"
     try:
-        gb = gamma_bounds(model, key, s["sig_min"] / 100, s["sig_max"] / 100)
-        path = run_path(model, profile, gb)
+        gb, path = plan(model, profile)
     except Exception as e:
         st.error(f"The plan could not be computed ({e}).")
         st.stop()
@@ -570,13 +710,13 @@ def main() -> None:
         st.warning(note)
     summary = fire.fire_summary(path, profile.target_age)
 
-    t1, t2, t3, t4 = st.tabs(["Your plan", "Portfolio", "What if", "Technical details"])
+    t1, t2, t3, t4 = st.tabs(["Client profile", "Portfolio", "Probability of FIRE", "Technical details"])
     with t1:
-        tab_plan(profile, path, summary)
+        tab_profile(profile, path)
     with t2:
         tab_portfolio(model, profile, path)
     with t3:
-        tab_what_if(model, profile, path, gb, summary)
+        tab_probability(model, profile, path, gb, summary)
     with t4:
         tab_technical(model, profile, path, gb)
 
