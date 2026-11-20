@@ -93,7 +93,7 @@ def dynamic_gamma(W: float, H: float, K: float, gamma_0: float, gamma_min: float
 
 
 def default_sigma_range(sig_minus: float, sig_plus: float) -> Tuple[float, float]:
-    """Defaults from the constrained frontier: (sigma_min, sigma_max)."""
+    """Defaults from the feasible volatility range (resampled frontier): (sigma_min, sigma_max)."""
     s_min = min(sig_minus + SIGMA_MIN_MARGIN, sig_plus)
     s_max = max(SIGMA_MAX_FRACTION * sig_plus, s_min)
     return s_min, s_max
@@ -104,14 +104,17 @@ def is_narrow_risk_range(sigma_min: float, sigma_max: float) -> bool:
     return sigma_max - sigma_min < MIN_RISK_SPREAD - 1e-12
 
 
-def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str],
+def gamma_bounds_from_sigma(sigma: np.ndarray, gammas: np.ndarray, weights: np.ndarray,
                             bounds: Tuple[float, float, float],
                             sigma_min: Optional[float] = None,
                             sigma_max: Optional[float] = None) -> Dict:
-    """gamma_min and gamma_0 from sigma_min and sigma_max through the sigma-problem.
+    """gamma_min and gamma_0 from sigma_min and sigma_max through the sigma-problem on the
+    resampled frontier, so that the portfolios actually held at gamma_min and gamma_0 have
+    exactly these volatilities (nominal, original Sigma).
 
-    User values are clipped to the feasible range [sigma-, sigma+]; sigma_min <= sigma_max is enforced.
-    A note is added when the range is narrower than MIN_RISK_SPREAD (the glide path is then ~flat).
+    `bounds` is opt.resampled_frontier_bounds(gammas, weights, sigma). User values are clipped to
+    that feasible range; sigma_min <= sigma_max is enforced. A note is added when the range is
+    narrower than MIN_RISK_SPREAD (the glide path is then ~flat).
     """
     sig_minus, sig_plus, _ = bounds
     d_min, d_max = default_sigma_range(sig_minus, sig_plus)
@@ -127,8 +130,8 @@ def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str
         notes.append("The maximum risk level was raised to the minimum risk level.")
     if is_narrow_risk_range(clipped_min, clipped_max):
         notes.append(NARROW_RANGE_NOTE)
-    gamma_min, st_min = opt.solve_sigma(mu, sigma, clipped_min, tickers, bounds)
-    gamma_0, st_max = opt.solve_sigma(mu, sigma, clipped_max, tickers, bounds)
+    gamma_min, st_min = opt.solve_sigma_resampled(clipped_min, gammas, weights, sigma, bounds)
+    gamma_0, st_max = opt.solve_sigma_resampled(clipped_max, gammas, weights, sigma, bounds)
     return {"sigma_min": clipped_min, "sigma_max": clipped_max, "gamma_min": gamma_min,
             "gamma_0": gamma_0, "status_min": st_min, "status_max": st_max, "notes": notes}
 

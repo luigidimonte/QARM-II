@@ -66,8 +66,9 @@ def build_model(rets: pd.DataFrame) -> Dict:
     gammas = opt.gamma_grid(mu_v, sig_v, tickers, bounds=bounds)
     point = opt.frontier_weights(mu_v, sig_v, gammas, tickers)
     resampled = opt.resample_weights((mu / 12).values, (sigma / 12).values, T, gammas, tickers)
+    rs_bounds = opt.resampled_frontier_bounds(gammas, resampled, sig_v)
     shrunk, delta = data.shrunk_covariance(rets, sigma)
-    return {"tickers": tickers, "mu": mu_v, "sigma": sig_v, "T": T, "bounds": bounds,
+    return {"tickers": tickers, "mu": mu_v, "sigma": sig_v, "T": T, "bounds": bounds, "rs_bounds": rs_bounds,
             "gammas": gammas, "point": point, "resampled": resampled,
             "shrunk": shrunk.values, "delta": delta,
             "start": rets.index[0], "end": rets.index[-1]}
@@ -75,8 +76,8 @@ def build_model(rets: pd.DataFrame) -> Dict:
 
 @st.cache_data(show_spinner=False)
 def gamma_bounds(_model: Dict, model_key: str, sigma_min: float, sigma_max: float) -> Dict:
-    return fire.gamma_bounds_from_sigma(_model["mu"], _model["sigma"], _model["tickers"],
-                                        _model["bounds"], sigma_min, sigma_max)
+    return fire.gamma_bounds_from_sigma(_model["sigma"], _model["gammas"], _model["resampled"],
+                                        _model["rs_bounds"], sigma_min, sigma_max)
 
 
 def run_path(model: Dict, profile: fire.ClientProfile, gb: Dict) -> pd.DataFrame:
@@ -131,8 +132,8 @@ def field(widget, label_text: str, key: str, *args, **kwargs):
 
 
 def risk_range(model: Dict):
-    """Feasible volatility range and defaults; keeps stored values inside the range."""
-    sig_minus, sig_plus, _ = model["bounds"]
+    """Feasible volatility range (resampled portfolios) and defaults; keeps stored values inside the range."""
+    sig_minus, sig_plus, _ = model["rs_bounds"]
     d_min, d_max = fire.default_sigma_range(sig_minus, sig_plus)
     lo, hi = round(sig_minus * 100, 2), round(sig_plus * 100, 2)
     st.session_state.setdefault("sig_min", round(d_min * 100, 2))
@@ -559,7 +560,9 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
                  f"(reached at γ ≈ {gamma_hi:.3g}). No closed form because of the bounds: solved as a QP with cvxpy. "
                  f"Using excess returns μ − r_f·1 (LN 2/3) gives the same x* because 1ᵀx = 1, so r_f and inflation "
                  f"do not change the optimal weights.")
-        st.write(f"σ-problem: γ such that σ(x*(γ)) = σ*, solved with Brent's method. "
+        st.write(f"σ-problem: γ such that the resampled portfolio at γ (see below), evaluated with the "
+                 f"original μ̂ and Σ̂, has volatility σ*; solved with Brent's method, so the portfolios "
+                 f"actually held hit the risk targets exactly. "
                  f"σ_min = {pct(gb['sigma_min'], 2)} → γ_min = {gb['gamma_min']:.4f}; "
                  f"σ_max = {pct(gb['sigma_max'], 2)} → γ₀ = {gb['gamma_0']:.4f}.")
 

@@ -9,6 +9,9 @@ numerically with cvxpy.
 sigma-problem (LN 1): find gamma such that sigma(x*(gamma)) = sigma*, by root finding.
 Resampling (LN 3, Michaud): sample T returns from N(mu_hat, Sigma_hat), re-estimate,
 solve the same constrained problem, average the weights.
+The risk targets of the plan are hit on the RESAMPLED frontier (the weights actually held):
+solve_sigma_resampled finds gamma such that the averaged weights, evaluated with the original
+mu and Sigma, have volatility sigma*. solve_sigma (point frontier) only builds the gamma grid.
 """
 from __future__ import annotations
 
@@ -206,3 +209,46 @@ def interp_weights(gamma: float, gammas: np.ndarray, weights: np.ndarray) -> np.
     combination of two feasible portfolios, hence feasible). gamma is clipped to the grid."""
     g = float(np.clip(gamma, gammas[0], gammas[-1]))
     return np.array([np.interp(g, gammas, weights[:, i]) for i in range(weights.shape[1])])
+
+
+def resampled_vol(gamma: float, gammas: np.ndarray, weights: np.ndarray, sigma: np.ndarray) -> float:
+    """Volatility, under the original Sigma, of the resampled weights interpolated at gamma."""
+    x = interp_weights(gamma, gammas, weights)
+    return float(np.sqrt(max(x @ np.asarray(sigma) @ x, 0.0)))
+
+
+def resampled_frontier_bounds(gammas: np.ndarray, weights: np.ndarray,
+                              sigma: np.ndarray) -> Tuple[float, float, float]:
+    """Volatility range of the resampled frontier: (sigma_lo, sigma_hi, gamma_at_hi).
+
+    sigma_lo is the volatility of the resampled portfolio at gamma = 0, sigma_hi the largest
+    volatility on the grid (interpolated portfolios between grid points are convex combinations,
+    so their volatility never exceeds that of the two end points).
+    """
+    vols = np.array([resampled_vol(g, gammas, weights, sigma) for g in gammas])
+    j = int(np.argmax(vols))
+    return float(vols[0]), float(vols[j]), float(gammas[j])
+
+
+def solve_sigma_resampled(sigma_target: float, gammas: np.ndarray, weights: np.ndarray,
+                          sigma: np.ndarray,
+                          bounds: Optional[Tuple[float, float, float]] = None) -> Tuple[float, str]:
+    """sigma-problem on the resampled frontier: gamma such that the volatility of the averaged
+    (interpolated) weights, computed with the original Sigma, equals sigma_target.
+
+    Takes the smallest such gamma: the first grid segment whose end reaches the target, then
+    Brent's method inside it (volatility is continuous in gamma along the interpolation).
+    Statuses as in solve_sigma: "ok", "below_min" (gamma = gammas[0]), "capped" (gamma_at_hi).
+    """
+    lo, hi, gamma_hi = bounds or resampled_frontier_bounds(gammas, weights, sigma)
+    if sigma_target <= lo + _SIGMA_TOL:
+        return float(gammas[0]), "below_min"
+    if sigma_target >= hi - _SIGMA_TOL:
+        return gamma_hi, "capped"
+    f = lambda g: resampled_vol(g, gammas, weights, sigma) - sigma_target
+    vals = np.array([f(g) for g in gammas])
+    j = int(np.argmax(vals >= 0.0))                # first grid point at or above the target (j >= 1)
+    if vals[j] == 0.0:
+        return float(gammas[j]), "ok"
+    gamma = brentq(f, gammas[j - 1], gammas[j], xtol=1e-14, rtol=1e-12, maxiter=200)
+    return float(gamma), "ok"

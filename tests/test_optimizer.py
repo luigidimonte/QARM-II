@@ -116,3 +116,30 @@ def test_all_portfolios_feasible(moments, bounds):
 def test_feasibility_check(tickers, msg):
     with pytest.raises(ValueError, match=msg):
         opt.check_feasibility(tickers)
+
+
+@pytest.fixture(scope="module")
+def resampled(moments, bounds):
+    mu, sigma = moments
+    gammas = opt.gamma_grid(mu, sigma, TICKERS, n_grid=10, bounds=bounds)
+    W = opt.resample_weights(mu / 12, sigma / 12, 120, gammas, TICKERS, n_resamples=10, seed=3)
+    return gammas, W, opt.resampled_frontier_bounds(gammas, W, sigma)
+
+
+@pytest.mark.parametrize("frac", [0.05, 0.3, 0.5, 0.8, 0.97])
+def test_resampled_sigma_problem_hits_target(moments, resampled, frac):
+    """Realised volatility of the averaged weights (original Sigma) equals the target."""
+    _, sigma = moments
+    gammas, W, (lo, hi, _) = resampled
+    target = lo + frac * (hi - lo)
+    gamma, status = opt.solve_sigma_resampled(target, gammas, W, sigma)
+    assert status == "ok" and gammas[0] <= gamma <= gammas[-1]
+    assert opt.resampled_vol(gamma, gammas, W, sigma) == pytest.approx(target, abs=1e-8)
+    assert_feasible(opt.interp_weights(gamma, gammas, W)[None, :])
+
+
+def test_resampled_sigma_problem_out_of_range(moments, resampled):
+    _, sigma = moments
+    gammas, W, (lo, hi, g_hi) = resampled
+    assert opt.solve_sigma_resampled(lo / 2, gammas, W, sigma) == (gammas[0], "below_min")
+    assert opt.solve_sigma_resampled(hi * 2, gammas, W, sigma) == (g_hi, "capped")
