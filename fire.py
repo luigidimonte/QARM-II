@@ -18,6 +18,7 @@ from data import to_real, vol_to_real
 SIGMA_MIN_MARGIN = 0.005      # default sigma_min = constrained min-variance vol + 0.5pp
 SIGMA_MAX_FRACTION = 0.90     # default sigma_max = 90% of the maximum feasible vol
 PROB_LEVELS = (0.50, 0.75, 0.90)
+CLIP_TOL = 1e-4               # ignore clipping smaller than 0.01pp (rounding of UI inputs)
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ def gamma_bounds_from_sigma(mu: np.ndarray, sigma: np.ndarray, tickers: List[str
     s_max = d_max if sigma_max is None else sigma_max
     notes: List[str] = []
     clipped_min, clipped_max = float(np.clip(s_min, sig_minus, sig_plus)), float(np.clip(s_max, sig_minus, sig_plus))
-    if clipped_min != s_min or clipped_max != s_max:
+    if max(abs(clipped_min - s_min), abs(clipped_max - s_max)) > CLIP_TOL:
         notes.append(f"Risk levels were limited to the feasible range "
                      f"{sig_minus:.1%} - {sig_plus:.1%} of the constrained portfolios.")
     if clipped_max < clipped_min:
