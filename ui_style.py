@@ -45,16 +45,15 @@ pio.templates["fire"] = go.layout.Template(layout=go.Layout(
     paper_bgcolor="#FFFFFF",
     plot_bgcolor="#FFFFFF",
     colorway=[BLUE, STEEL, NAVY, "#8FA3BC", GOLD, MIST],
-    xaxis=dict(showgrid=False, zeroline=False, showline=True, linecolor=LINE, linewidth=1,
+    xaxis=dict(automargin=True, showgrid=False, zeroline=False, showline=True, linecolor=LINE, linewidth=1,
                ticks="outside", tickcolor=LINE, ticklen=4, title=dict(font=dict(size=12, color=GREY))),
-    yaxis=dict(showgrid=True, gridcolor="#EEF2F7", gridwidth=1, zeroline=False, showline=False,
+    yaxis=dict(automargin=True, showgrid=True, gridcolor="#EEF2F7", gridwidth=1, zeroline=False, showline=False,
                title=dict(font=dict(size=12, color=GREY))),
     legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0,
                 font=dict(size=12, color=NAVY), bgcolor="rgba(0,0,0,0)"),
     hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=LINE, font=dict(family=SANS, size=12, color=NAVY)),
     margin=dict(l=10, r=10, t=30, b=10),
     hovermode="closest",
-    transition=dict(duration=400, easing="cubic-in-out"),
     separators=".'",
 ))
 pio.templates.default = "fire"
@@ -218,7 +217,7 @@ hr, [data-testid="stDivider"] hr {{ border: none; border-top: 1px solid var(--li
 h1, .fp-lead, .fp-brand, [data-testid="stVerticalBlockBorderWrapper"] {{ animation: fp-rise 0.6s var(--ease) both; }}
 .fp-lead {{ animation-delay: 0.08s; }}
 [data-testid="stTabs"] [role="tabpanel"] {{ animation: fp-fade 0.4s ease-out both; }}
-[data-testid="stPlotlyChart"] {{ animation: fp-rise 0.7s var(--ease) both; animation-delay: 0.1s; }}
+[data-testid="stPlotlyChart"] {{ animation: fp-fade 0.6s ease-out both; animation-delay: 0.1s; }}
 [data-testid="stMetric"] {{ animation: fp-rise 0.55s var(--ease) both; }}
 [data-testid="stColumn"]:nth-child(2) [data-testid="stMetric"] {{ animation-delay: 0.07s; }}
 [data-testid="stColumn"]:nth-child(3) [data-testid="stMetric"] {{ animation-delay: 0.14s; }}
