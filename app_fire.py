@@ -33,7 +33,10 @@ PRESETS: Dict[str, Dict] = {
     "Mid career (40)": dict(age=40, income=150_000, expenses=85_000, wealth=400_000, target_age=55),
     "Late starter (50)": dict(age=50, income=130_000, expenses=90_000, wealth=600_000, target_age=60),
 }
-DEFAULTS: Dict = dict(PRESETS["Mid career (40)"], name="", swr=4.0, rf=1.0, infl=1.5)
+# Risk-free rate used to discount future savings (H_t). Fixed by the adviser, not asked to the
+# client: it is a market input, not a preference.
+RF_NOMINAL: float = 0.01
+DEFAULTS: Dict = dict(PRESETS["Mid career (40)"], name="", swr=4.0, infl=1.5)
 
 
 # ----------------------------------------------------------------------------- formatting
@@ -160,7 +163,7 @@ def profile_from_state() -> fire.ClientProfile:
     s = st.session_state
     return fire.ClientProfile(age=int(s["age"]), income=float(s["income"]), expenses=float(s["expenses"]),
                               wealth=float(s["wealth"]), target_age=int(s["target_age"]),
-                              swr=s["swr"] / 100, rf_nominal=s["rf"] / 100, inflation=s["infl"] / 100)
+                              swr=s["swr"] / 100, rf_nominal=RF_NOMINAL, inflation=s["infl"] / 100)
 
 
 def profile_rows(s, start_vol: Optional[float] = None) -> List[tuple]:
@@ -176,8 +179,7 @@ def profile_rows(s, start_vol: Optional[float] = None) -> List[tuple]:
             ("Income and expenses", f"{chf(s['income'])} income, {chf(s['expenses'])} expenses "
                                     f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
             ("Invested wealth", chf(s["wealth"]), 3),
-            ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%, "
-                            f"risk-free rate {s['rf']:.2f}%", 4),
+            ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%", 4),
             ("Risk range", risk, 4)]
 
 
@@ -235,7 +237,6 @@ def questionnaire(model: Dict) -> None:
             field(st.slider, "Safe withdrawal rate (%)", "swr", 2.5, 6.0, step=0.25,
                   help="Share of your wealth you plan to spend each year once independent.")
             field(st.slider, "Expected inflation (%)", "infl", 0.0, 5.0, step=0.25)
-            field(st.slider, "Risk-free rate (%, nominal)", "rf", 0.0, 5.0, step=0.25)
             st.info(f"**Portfolio rules (fixed)**  \n"
                     f"At most {opt.CONFIG['max_weight']:.0%} in any single ETF.  \n"
                     f"At least {opt.CONFIG['min_gold']:.0%} in gold.  \n"
@@ -315,7 +316,7 @@ def wealth_chart(path: pd.DataFrame, K: float) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=path["age"], y=path["M1"], name="Expected wealth", mode="lines",
                              line=dict(width=2.5, color=BLUE), fill="tozeroy",
-                             fillcolor="rgba(10, 61, 145, 0.06)",
+                             fillcolor=ui.ACCENT_FILL,
                              hovertemplate="Age %{x}<br>CHF %{y:,.0f}<extra></extra>"))
     fig.add_hline(y=K, line=dict(color=NAVY, width=1, dash="dash"), annotation_text=f"FIRE capital {chf(K)}",
                   annotation_font=dict(color=GREY, size=11))
@@ -619,8 +620,8 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
         st.latex(r"H_t=c\,\frac{1-(1+r_f)^{-h_t}}{r_f},\qquad "
                  r"\gamma_t=\gamma_{\min}+(\gamma_0-\gamma_{\min})\frac{H_t}{W_t+H_t},\qquad "
                  r"\gamma_t=\gamma_{\min}\ \text{if}\ W_t\ge K")
-        st.write(f"H_t is the value today of the savings still to come before the target date (real r_f = "
-                 f"{pct(profile.rf_real, 2)}). W_t is the expected wealth on the planned path. Each year: "
+        st.write(f"H_t is the value today of the savings still to come before the target date (r_f = "
+                 f"{pct(RF_NOMINAL, 2)} nominal, fixed by the adviser; {pct(profile.rf_real, 2)} real). W_t is the expected wealth on the planned path. Each year: "
                  f"(W_t, h_t) → H_t → γ_t → resampled constrained portfolio → trades.")
         ui.show_table(path[["age", "W", "H", "gamma", "m", "s"]].rename(
             columns={"W": "W_t", "H": "H_t", "gamma": "γ_t", "m": "μ_p (real)", "s": "σ_p (real)"}),
@@ -653,8 +654,8 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame, 
 # ----------------------------------------------------------------------------- main
 def main() -> None:
     init_state()
-    ui.header("FIRE Planner",
-              "When can you stop depending on a salary? A plan that invests your savings in six ETFs "
+    ui.header("When can you stop working?",
+              "A plan that invests your savings in six ETFs "
               "and lowers its risk as you get closer to financial independence.")
 
     try:
