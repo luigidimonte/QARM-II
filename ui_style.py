@@ -20,15 +20,21 @@ MIST = "#F1F5F9"        # light surface
 LINE = "#E2E8F0"        # thin rules and gridlines
 GREY = "#64748B"        # captions, secondary marks
 GOLD = "#D97706"        # warm highlight (γ line, markers)
-ACCENT_FILL = "rgba(37, 99, 235, 0.08)"
+FAN_OUTER = "rgba(37, 99, 235, 0.12)"
+FAN_INNER = "rgba(37, 99, 235, 0.22)"
+REACHED = "#0F766E"     # simulated paths that satisfy / miss the FIRE condition
+MISSED = "#EA580C"
 
-# one hue per asset class: equities blue / red / violet, bonds teal (dark / light), gold yellow
+# one hue per asset: equities blue / red / violet, real estate pink, bonds teal (dark / light) and
+# green (inflation-linked), gold yellow
 ASSET_COLORS: Dict[str, str] = {
     "SPY": "#1E40AF",
-    "EWL": "#DC2626",
+    "SMICHA.SW": "#DC2626",
     "EEM": "#7C3AED",
+    "VNQ": "#F9A8D4",
     "IEF": "#0F766E",
     "LQD": "#5EEAD4",
+    "TIP": "#65A30D",
     "GLD": "#EAB308",
 }
 # thin outline so the lightest fills stay visible on white
@@ -85,6 +91,8 @@ CSS = f"""
 html, body, [class*="st-"], .stMarkdown, .stText, button, input, textarea, select {{
   font-family: {SANS}; -webkit-font-smoothing: antialiased;
 }}
+/* the rule above also matches the icon glyphs, which need their own font */
+[data-testid="stIconMaterial"] {{ font-family: "Material Symbols Rounded" !important; }}
 .stApp {{ background: #FAFBFC; color: var(--ink); }}
 
 /* layout */
