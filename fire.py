@@ -1,7 +1,7 @@
-"""FIRE layer: target capital, dynamic risk tolerance, glide path and probability of FIRE.
+"""FIRE layer: target capital, dynamic risk tolerance, Monte Carlo simulation of wealth.
 
-All amounts are in real terms (today's money). The optimiser works on nominal moments;
-portfolio moments are converted to real terms here with the exact Fisher relation.
+All amounts are in real terms (today's CHF). mu and Sigma are estimated on real CHF returns, so
+nothing is deflated here; expected inflation only enters the real risk-free rate (market.RiskFree).
 """
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
 import optimizer as opt
-from data import to_real, vol_to_real
+from market import RiskFree
 
 SIGMA_MIN_MARGIN = 0.005      # default sigma_min = constrained min-variance vol + 0.5pp
 SIGMA_MAX_FRACTION = 0.90     # default sigma_max = 90% of the maximum feasible vol
 PROB_LEVELS = (0.50, 0.75, 0.90)
+PERCENTILES = (5, 25, 50, 75, 95)
+N_PATHS = 10_000
+SEED = 42
 CLIP_TOL = 1e-4               # ignore clipping smaller than 0.01pp (rounding of UI inputs)
 MIN_RISK_SPREAD = 0.005       # below 0.5pp between sigma_min and sigma_max the glide path is ~flat
 NARROW_RANGE_NOTE = ("The risk range is (almost) zero wide, so the portfolio will hardly change over "
@@ -26,23 +28,17 @@ NARROW_RANGE_NOTE = ("The risk range is (almost) zero wide, so the portfolio wil
 
 @dataclass(frozen=True)
 class ClientProfile:
-    """Client inputs. Money amounts are yearly and in today's money."""
+    """Client inputs. Money amounts are yearly and in today's CHF."""
     age: int
     income: float
     expenses: float
     wealth: float
     target_age: int
     swr: float = 0.04
-    rf_nominal: float = 0.01
-    inflation: float = 0.015
 
     @property
     def savings(self) -> float:
         return yearly_savings(self.income, self.expenses)
-
-    @property
-    def rf_real(self) -> float:
-        return float(to_real(self.rf_nominal, self.inflation))
 
     def with_changes(self, **kwargs) -> "ClientProfile":
         return replace(self, **kwargs)
@@ -76,20 +72,28 @@ def yearly_savings(income: float, expenses: float) -> float:
     return income - expenses
 
 
-def pv_savings(c: float, h: float, r: float) -> float:
-    """H_t = c (1 - (1+r)^-h) / r : present value of the remaining savings (c*h if r ~ 0)."""
-    h = max(h, 0.0)
-    if abs(r) < 1e-9:
-        return c * h
-    return c * (1.0 - (1.0 + r) ** (-h)) / r
+def human_capital(c: float, h, r):
+    """H_t = c (1 - (1+r)^-h) / r : present value of the remaining savings (c*h if r ~ 0).
+    Works on scalars and arrays."""
+    h = np.maximum(h, 0.0)
+    zero = np.abs(r) < 1e-9
+    safe = np.where(zero, 1.0, r)
+    return np.where(zero, c * h, c * (1.0 - (1.0 + safe) ** (-h)) / safe)[()]
 
 
-def dynamic_gamma(W: float, H: float, K: float, gamma_0: float, gamma_min: float) -> float:
-    """gamma_t = gamma_min + (gamma_0 - gamma_min) * H_t / (W_t + H_t); gamma_min if W_t >= K."""
-    if W >= K or W + H <= 0:
-        return gamma_min
-    share = min(max(H / (W + H), 0.0), 1.0)
-    return gamma_min + (gamma_0 - gamma_min) * share
+def gamma_t(W, c: float, h_t: float, r_f, K: float, gamma_0: float, gamma_min: float):
+    """gamma_t = gamma_min + (gamma_0 - gamma_min) * H_t / (W_t + H_t); gamma_min if W_t >= K.
+
+    At and after the FIRE age (h_t <= 0) there are no savings left: gamma_min, r_f is not used.
+    W may be a scalar or an array (one W_t per simulated path).
+    """
+    W = np.asarray(W, dtype=float)
+    if h_t <= 0:
+        return np.full(W.shape, gamma_min)[()]
+    H = human_capital(c, h_t, r_f)
+    total = W + H
+    share = np.clip(H / np.where(total > 0, total, 1.0), 0.0, 1.0)
+    return np.where((W >= K) | (total <= 0), gamma_min, gamma_min + (gamma_0 - gamma_min) * share)[()]
 
 
 def default_sigma_range(sig_minus: float, sig_plus: float) -> Tuple[float, float]:
@@ -110,7 +114,7 @@ def gamma_bounds_from_sigma(sigma: np.ndarray, gammas: np.ndarray, weights: np.n
                             sigma_max: Optional[float] = None) -> Dict:
     """gamma_min and gamma_0 from sigma_min and sigma_max through the sigma-problem on the
     resampled frontier, so that the portfolios actually held at gamma_min and gamma_0 have
-    exactly these volatilities (nominal, original Sigma).
+    exactly these volatilities (real CHF returns, original Sigma).
 
     `bounds` is opt.resampled_frontier_bounds(gammas, weights, sigma). User values are clipped to
     that feasible range; sigma_min <= sigma_max is enforced. A note is added when the range is
@@ -141,99 +145,125 @@ def horizon_end_age(p: ClientProfile) -> int:
     return int(min(max(p.target_age + 15, 65), 100))
 
 
-def simulate_glide_path(p: ClientProfile, mu: np.ndarray, sigma: np.ndarray, tickers: List[str],
-                        gammas: np.ndarray, grid_weights: np.ndarray,
-                        gamma_0: float, gamma_min: float) -> pd.DataFrame:
-    """Yearly loop on the expected wealth path.
+@dataclass(frozen=True)
+class ResampledGrid:
+    """Resampled portfolios, computed once: weights (n_grid x n) on the gamma grid, the original
+    annual moments of the real CHF returns, and the gamma range from the sigma-problem."""
+    tickers: Tuple[str, ...]
+    gammas: np.ndarray
+    weights: np.ndarray
+    mu: np.ndarray
+    sigma: np.ndarray
+    gamma_0: float
+    gamma_min: float
 
-    At each age: (W_t, h_t) -> H_t -> gamma_t -> resampled constrained weights x_t. Over the
-    year the holdings drift with the (real) expected asset returns and the savings c are added;
-    next year's trades are the new target weights minus the drifted weights.
+
+@dataclass(frozen=True)
+class WealthSimulation:
+    """Result of simulate_wealth. `path` has one row per age (averages over the simulated paths,
+    percentiles of wealth, probability of FIRE); `wealth` is n_paths x number of ages."""
+    path: pd.DataFrame
+    wealth: np.ndarray
+    n_paths: int
+    seed: int
+
+    def wealth_at(self, age: int) -> np.ndarray:
+        """Simulated wealth of every path at the given age."""
+        return self.wealth[:, int(age) - int(self.path["age"].iloc[0])]
+
+
+def target_portfolio(W, h: float, p: ClientProfile, grid: ResampledGrid, rf: RiskFree):
+    """(W_t, h_t) -> real r_f(h_t) -> H_t -> gamma_t -> resampled constrained weights x_t.
+
+    W is one value or one value per path. Returns (r_f or NaN if h_t <= 0, H_t, gamma_t, x_t).
     """
-    K = fire_target(p.expenses, p.swr)
-    c, r = p.savings, p.rf_real
-    mu = np.asarray(mu, dtype=float)
-    mu_real_assets = to_real(mu, p.inflation)
+    r = rf.real(h) if h > 0 else float("nan")
+    H = float(human_capital(p.savings, h, r)) if h > 0 else 0.0
+    g = gamma_t(W, p.savings, h, r, fire_target(p.expenses, p.swr), grid.gamma_0, grid.gamma_min)
+    return r, H, g, opt.interp_weights(g, grid.gammas, grid.weights)
+
+
+def start_volatility(p: ClientProfile, grid: ResampledGrid, rf: RiskFree) -> float:
+    """Volatility of today's portfolio (no simulation needed)."""
+    x = target_portfolio(p.wealth, p.target_age - p.age, p, grid, rf)[3]
+    return opt.portfolio_stats(x, grid.mu, grid.sigma)[1]
+
+
+# --------------------------------------------------------------------------------------
+# Project layer (NOT from the course slides): Monte Carlo simulation of wealth.
+# --------------------------------------------------------------------------------------
+
+def lognormal_parameters(mu: np.ndarray, sigma: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """(m, A) such that 1 + R = exp(m + A z), z ~ N(0, I), has mean 1 + mu and covariance sigma.
+
+    Joint lognormal gross returns matched to the first two moments: V = ln(1 + sigma_ij /
+    ((1+mu_i)(1+mu_j))) = A A', m = ln(1+mu) - diag(V)/2. An eigenvalue factor is used so that a
+    singular sigma (e.g. zero volatility) is allowed.
+    """
+    gross = 1.0 + np.asarray(mu, dtype=float)
+    V = np.log1p(np.asarray(sigma, dtype=float) / np.outer(gross, gross))
+    values, vectors = np.linalg.eigh(V)
+    if values.min() < -1e-10:
+        raise ValueError("The covariance matrix cannot be matched by lognormal returns.")
+    return np.log(gross) - np.diag(V) / 2.0, vectors * np.sqrt(np.maximum(values, 0.0))
+
+
+def simulate_wealth(p: ClientProfile, grid: ResampledGrid, rf: RiskFree,
+                    n_paths: int = N_PATHS, seed: int = SEED) -> WealthSimulation:
+    """Simulate n_paths yearly wealth paths until horizon_end_age, all in real terms.
+
+    Each year, on every path: W_t -> gamma_t -> x_t (target_portfolio), then real asset returns
+    are drawn jointly (lognormal_parameters, independent across years), and
+        W_{t+1} = W_t (1 + x_t'R_t) + c        (savings c enter at the end of the year).
+    Normals are drawn year by year from default_rng(seed), so two runs with the same seed and
+    n_paths share their random numbers even if the profiles or horizons differ.
+    """
+    K, c = fire_target(p.expenses, p.swr), p.savings
+    ages = np.arange(p.age, horizon_end_age(p) + 1)
+    n = len(grid.tickers)
+    m_log, A = lognormal_parameters(grid.mu, grid.sigma)
+    rng = np.random.default_rng(seed)
+    wealth = np.empty((n_paths, len(ages)))
+    wealth[:, 0] = p.wealth
+    before = np.zeros((n_paths, n))                # money per ETF before rebalancing (today: cash)
     rows: List[Dict] = []
-    W = float(p.wealth)
-    holdings: Optional[np.ndarray] = None          # money per ETF before rebalancing
-    for age in range(p.age, horizon_end_age(p) + 1):
-        h = max(p.target_age - age, 0)
-        H = pv_savings(c, h, r)
-        g = dynamic_gamma(W, H, K, gamma_0, gamma_min)
-        x = opt.interp_weights(g, gammas, grid_weights)
-        m_nom, s_nom = opt.portfolio_stats(x, mu, sigma)
-        if holdings is None:                       # today: invest current wealth from cash
-            before_w = np.zeros(len(x))
-            trade_amt = x * W
-        else:
-            before_w = holdings / holdings.sum() if holdings.sum() > 0 else np.zeros(len(x))
-            trade_amt = x * W - holdings
-        row = {"age": age, "years": age - p.age, "W": W, "h": h, "H": H, "gamma": g,
-               "m": float(to_real(m_nom, p.inflation)), "s": float(vol_to_real(s_nom, p.inflation)),
-               "m_nominal": m_nom, "s_nominal": s_nom}
-        for i, t in enumerate(tickers):
-            row[f"w_{t}"] = x[i]
-            row[f"drift_{t}"] = before_w[i]
-            row[f"trade_pct_{t}"] = x[i] - before_w[i]
-            row[f"trade_amt_{t}"] = trade_amt[i]
+    for t, age in enumerate(ages):
+        W = wealth[:, t]
+        h = max(p.target_age - int(age), 0)
+        r, H, g, x = target_portfolio(W, h, p, grid, rf)
+        m = x @ grid.mu
+        s = np.sqrt(np.maximum(np.einsum("ki,ij,kj->k", x, grid.sigma, x), 0.0))
+        invested = before.sum(axis=1, keepdims=True)
+        drift = np.where(invested > 0, before / np.where(invested > 0, invested, 1.0), 0.0)
+        trade = x * W[:, None] - before
+        P = float(np.mean(W >= K))
+        row = {"age": int(age), "years": t, "W": W.mean(), "h": h, "rf": r, "H": H, "gamma": g.mean(),
+               "m": m.mean(), "s": s.mean(),
+               "K": K, "P": P, "SE": np.sqrt(P * (1.0 - P) / n_paths)}
+        row.update({f"q{q}": v for q, v in zip(PERCENTILES, np.percentile(W, PERCENTILES))})
+        for i, tick in enumerate(grid.tickers):
+            row[f"w_{tick}"] = x[:, i].mean()
+            row[f"drift_{tick}"] = drift[:, i].mean()
+            row[f"trade_pct_{tick}"] = x[:, i].mean() - drift[:, i].mean()
+            row[f"trade_amt_{tick}"] = trade[:, i].mean()
         rows.append(row)
-        holdings = W * x * (1.0 + mu_real_assets)  # drift over the year
-        W = float(holdings.sum() + c)              # = W (1 + m_real) + c
-    path = pd.DataFrame(rows)
-    path["K"] = K
-    probs = fire_probability_lognormal(p.wealth, c, path["m"].values, path["s"].values, K)
-    for col in ("M1", "M2", "P"):
-        path[col] = probs[col]
-    return path
-
-
-# --------------------------------------------------------------------------------------
-# Project layer (NOT from the course slides): probability of FIRE without Monte Carlo.
-# --------------------------------------------------------------------------------------
-
-def fire_probability_lognormal(W0: float, c: float, m: np.ndarray, s: np.ndarray,
-                               K: float) -> Dict[str, np.ndarray]:
-    """P(W_t >= K) at each date from the first two moments of wealth.
-
-    W_{t+1} = W_t (1 + R_t) + c with E[R_t] = m_t, Var[R_t] = s_t^2 (R_t independent of W_t):
-        M1_{t+1} = M1_t (1 + m_t) + c
-        M2_{t+1} = M2_t ((1 + m_t)^2 + s_t^2) + 2 c (1 + m_t) M1_t + c^2
-    A lognormal is fitted by moment matching: s^2 = ln(M2 / M1^2), m = ln M1 - s^2 / 2,
-    and P(W_t >= K) = 1 - Phi((ln K - m) / s). Element t uses the return of the year
-    starting at t, so element 0 is today's (known) wealth.
-    """
-    n = len(m)
-    M1, M2 = np.empty(n), np.empty(n)
-    M1[0], M2[0] = W0, W0 ** 2
-    for t in range(n - 1):
-        g = 1.0 + m[t]
-        M1[t + 1] = M1[t] * g + c
-        M2[t + 1] = M2[t] * (g ** 2 + s[t] ** 2) + 2.0 * c * g * M1[t] + c ** 2
-    P = np.empty(n)
-    for t in range(n):
-        if M1[t] <= 0:
-            P[t] = 0.0
-            continue
-        ratio = M2[t] / M1[t] ** 2
-        if ratio <= 1.0 + 1e-14:                   # no uncertainty: deterministic wealth
-            P[t] = 1.0 if M1[t] >= K else 0.0
-            continue
-        s2 = np.log(ratio)
-        mean_log = np.log(M1[t]) - s2 / 2.0
-        P[t] = 1.0 - norm.cdf((np.log(K) - mean_log) / np.sqrt(s2))
-    return {"M1": M1, "M2": M2, "P": P}
+        if t + 1 < len(ages):
+            R = np.exp(m_log + rng.standard_normal((n_paths, n)) @ A.T) - 1.0
+            before = W[:, None] * x * (1.0 + R)          # drift over the year
+            wealth[:, t + 1] = before.sum(axis=1) + c
+    return WealthSimulation(pd.DataFrame(rows), wealth, n_paths, seed)
 
 
 def fire_summary(path: pd.DataFrame, target_age: int,
                  levels: Tuple[float, ...] = PROB_LEVELS) -> Dict:
-    """P(FIRE) at the target age and the first ages at which P reaches each level."""
-    at_target = path.loc[path["age"] == target_age, "P"]
+    """P(FIRE) at the target age, its Monte Carlo standard error, and the first ages at which P
+    reaches each level."""
+    at_target = path.loc[path["age"] == target_age].iloc[0]
     ages: Dict[float, Optional[int]] = {}
     for lv in levels:
         hit = path.loc[path["P"] >= lv, "age"]
         ages[lv] = int(hit.iloc[0]) if len(hit) else None
-    return {"p_target": float(at_target.iloc[0]) if len(at_target) else float("nan"), "ages": ages}
+    return {"p_target": float(at_target["P"]), "se_target": float(at_target["SE"]), "ages": ages}
 
 
 def weights_table(path: pd.DataFrame, tickers: List[str], prefix: str = "w_") -> pd.DataFrame:

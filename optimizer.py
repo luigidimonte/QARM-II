@@ -7,8 +7,7 @@ portfolio. Because of the box constraints there is no closed form: the QP is sol
 numerically with cvxpy.
 
 sigma-problem (LN 1): find gamma such that sigma(x*(gamma)) = sigma*, by root finding.
-Resampling (LN 3, Michaud): sample T returns from N(mu_hat, Sigma_hat), re-estimate,
-solve the same constrained problem, average the weights.
+Resampling (LN 3 slides 11-12, Michaud 2007), steps 1-4: resample_draws and resample_weights.
 The risk targets of the plan are hit on the RESAMPLED frontier (the weights actually held):
 solve_sigma_resampled finds gamma such that the averaged weights, evaluated with the original
 mu and Sigma, have volatility sigma*. solve_sigma (point frontier) only builds the gamma grid.
@@ -25,7 +24,7 @@ CONFIG: Dict = {
     "max_weight": 0.40,      # x_i <= 40% for every asset
     "min_gold": 0.10,        # x_gold >= 10%
     "gold_ticker": "GLD",
-    "n_resamples": 200,
+    "n_resamples": 1000,     # K draws of the resampling
     "n_grid": 40,
     "seed": 42,
 }
@@ -181,9 +180,14 @@ def frontier_weights(mu: np.ndarray, sigma: np.ndarray, gammas: np.ndarray,
 def resample_draws(mu_m: np.ndarray, sigma_m: np.ndarray, T: int, gammas: np.ndarray,
                    tickers: List[str], n_resamples: int = CONFIG["n_resamples"],
                    seed: int = CONFIG["seed"]) -> np.ndarray:
-    """LN 3 resampling, steps 1-3. For each draw: sample T monthly returns from
-    N(mu_hat, Sigma_hat), re-estimate and annualise mu and Sigma, solve the same constrained
-    gamma-problem on the gamma grid. Returns all weights (n_resamples x n_grid x n)."""
+    """Resampling, LN 3 slide 12, steps 1-3 (Michaud 2007).
+
+    Step 1: draw T returns (T = number of historical observations) from a joint normal i.i.d.
+    process with the empirical monthly means, variances and covariances; compute the sampled
+    mean vector mu_k and covariance matrix Sigma_k (annualised like the point estimates).
+    Step 2: constrained MV frontier of (mu_k, Sigma_k), on the same gamma grid for every draw.
+    Step 3: repeat for n_resamples draws. Returns all weights (n_resamples x n_grid x n).
+    """
     rng = np.random.default_rng(seed)
     prob = GammaProblem(tickers)
     out = np.empty((n_resamples, len(gammas), len(tickers)))
@@ -199,16 +203,20 @@ def resample_draws(mu_m: np.ndarray, sigma_m: np.ndarray, T: int, gammas: np.nda
 def resample_weights(mu_m: np.ndarray, sigma_m: np.ndarray, T: int, gammas: np.ndarray,
                      tickers: List[str], n_resamples: int = CONFIG["n_resamples"],
                      seed: int = CONFIG["seed"]) -> np.ndarray:
-    """LN 3 step 4: average the resampled weights (n_grid x n). The average of feasible
-    portfolios is feasible because all constraints are linear."""
+    """Resampling, LN 3 slide 12, step 4: for each gamma, average the weights across draws
+    (n_grid x n). The average of feasible portfolios is feasible because all constraints are
+    linear. Risk and return of these portfolios use the original mu and Sigma."""
     return resample_draws(mu_m, sigma_m, T, gammas, tickers, n_resamples, seed).mean(axis=0)
 
 
-def interp_weights(gamma: float, gammas: np.ndarray, weights: np.ndarray) -> np.ndarray:
+def interp_weights(gamma, gammas: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """Resampled weights at gamma by linear interpolation between grid points (a convex
-    combination of two feasible portfolios, hence feasible). gamma is clipped to the grid."""
-    g = float(np.clip(gamma, gammas[0], gammas[-1]))
-    return np.array([np.interp(g, gammas, weights[:, i]) for i in range(weights.shape[1])])
+    combination of two feasible portfolios, hence feasible). gamma is clipped to the grid.
+    Scalar gamma -> weights of shape (n,); gamma of shape (N,) -> weights of shape (N, n)."""
+    g = np.clip(gamma, gammas[0], gammas[-1])
+    j = np.clip(np.searchsorted(gammas, g, side="right") - 1, 0, len(gammas) - 2)
+    a = ((g - gammas[j]) / (gammas[j + 1] - gammas[j]))[..., None]
+    return (1.0 - a) * weights[j] + a * weights[j + 1]
 
 
 def resampled_vol(gamma: float, gammas: np.ndarray, weights: np.ndarray, sigma: np.ndarray) -> float:

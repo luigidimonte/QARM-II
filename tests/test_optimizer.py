@@ -109,6 +109,30 @@ def test_all_portfolios_feasible(moments, bounds):
         assert_feasible(opt.interp_weights(g, gammas, avg))
 
 
+def test_resampling_follows_the_four_steps(moments, bounds):
+    """LN 3 slide 12 re-done by hand, draw by draw, must give the same weights."""
+    mu, sigma = moments
+    gammas, T, K = opt.gamma_grid(mu, sigma, TICKERS, n_grid=5, bounds=bounds), 120, 6
+    rng, total = np.random.default_rng(11), 0.0
+    for _ in range(K):                                                        # step 3
+        sample = rng.multivariate_normal(mu / 12, sigma / 12, size=T)         # step 1
+        mu_k, sigma_k = sample.mean(axis=0) * 12, np.cov(sample, rowvar=False) * 12
+        total = total + opt.frontier_weights(mu_k, sigma_k, gammas, TICKERS)  # step 2, same grid
+    W = opt.resample_weights(mu / 12, sigma / 12, T, gammas, TICKERS, n_resamples=K, seed=11)
+    np.testing.assert_allclose(W, total / K, atol=1e-6)                       # step 4
+    assert opt.CONFIG["n_resamples"] == 1000
+
+
+def test_resampling_seed(moments, bounds):
+    mu, sigma = moments
+    gammas = opt.gamma_grid(mu, sigma, TICKERS, n_grid=5, bounds=bounds)
+    run = lambda seed: opt.resample_weights(mu / 12, sigma / 12, 120, gammas, TICKERS, n_resamples=5, seed=seed)
+    a = run(1)
+    np.testing.assert_array_equal(a, run(1))
+    assert not np.allclose(a, run(2))
+    assert_feasible(a)
+
+
 @pytest.mark.parametrize("tickers, msg", [
     (["SPY", "GLD"], "assets"),
     (["SPY", "EWL", "EEM", "IEF"], "gold"),

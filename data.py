@@ -1,25 +1,31 @@
 """Data download and estimation for the FIRE planner.
 
-Monthly returns of one liquid ETF per asset class are downloaded fresh from
-Yahoo Finance; expected returns and the covariance matrix are annualised.
-Everything is in one currency (FX ignored); conversion to real terms uses
-the exact Fisher relation.
+Monthly total returns of one ETF per asset class (Yahoo Finance) are converted to CHF (hedged or
+unhedged) and deflated with the Swiss CPI. Expected returns and the covariance matrix are
+estimated on these REAL CHF returns and annualised.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-UNIVERSE: Dict[str, str] = {
-    "SPY": "US equities",
-    "EWL": "Swiss equities",
-    "EEM": "Emerging markets equities",
-    "IEF": "Sovereign bonds (US Treasuries 7-10y)",
-    "LQD": "Corporate bonds (investment grade)",
-    "GLD": "Gold",
+# backfill: (proxy ticker, first day of the ETF's own data). Yahoo has no dividends before 2013
+# for ETFs listed in Zurich, so before that date SMICHA.SW would be a price return: the SMI
+# total-return index (SMIC.SW, dividends included) is used instead.
+ASSETS: Dict[str, Dict] = {
+    "SPY": dict(name="US equities", asset_class="Equity", ccy="USD"),
+    "SMICHA.SW": dict(name="Swiss equities", asset_class="Equity", ccy="CHF",
+                      backfill=("SMIC.SW", "2013-01-01")),
+    "EEM": dict(name="Emerging markets equities", asset_class="Equity", ccy="USD"),
+    "VNQ": dict(name="US real estate (REITs)", asset_class="Real estate", ccy="USD"),
+    "IEF": dict(name="Sovereign bonds (US Treasuries 7-10y)", asset_class="Bonds", ccy="USD"),
+    "LQD": dict(name="Corporate bonds (investment grade)", asset_class="Bonds", ccy="USD"),
+    "TIP": dict(name="Inflation-linked bonds (US TIPS)", asset_class="Bonds", ccy="USD"),
+    "GLD": dict(name="Gold", asset_class="Gold", ccy="USD"),
 }
+UNIVERSE: Dict[str, str] = {t: a["name"] for t, a in ASSETS.items()}
 GOLD_TICKER = "GLD"
 START_DATE = "2000-01-01"
 MIN_MONTHS = 60
@@ -27,13 +33,31 @@ MONTHS_PER_YEAR = 12
 
 
 def download_prices(tickers: List[str], start: str = START_DATE) -> pd.DataFrame:
-    """Download daily dividend-adjusted close prices from Yahoo Finance up to today."""
+    """Daily dividend-adjusted close prices from Yahoo Finance up to today, with backfills."""
     import yfinance as yf
 
-    raw = yf.download(tickers, start=start, auto_adjust=True, progress=False)
+    proxies = [ASSETS[t]["backfill"][0] for t in tickers if "backfill" in ASSETS.get(t, {})]
+    raw = yf.download(tickers + proxies, start=start, auto_adjust=True, progress=False)
     if raw is None or raw.empty:
         raise RuntimeError("No price data returned by Yahoo Finance.")
-    return close_prices(raw, tickers)
+    return apply_backfills(close_prices(raw, tickers + proxies), tickers)
+
+
+def apply_backfills(prices: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
+    """Before its backfill date an asset follows its proxy, rescaled to join at the first common day."""
+    out = prices[tickers].copy()
+    for t in tickers:
+        if "backfill" not in ASSETS.get(t, {}):
+            continue
+        proxy, date = ASSETS[t]["backfill"]
+        both = prices.loc[date:, [t, proxy]].dropna()
+        if both.empty:
+            continue
+        join = both.index[0]
+        scale = both[t].iloc[0] / both[proxy].iloc[0]
+        out[t] = pd.concat([prices.loc[prices.index < join, proxy] * scale,
+                            prices.loc[prices.index >= join, t]])
+    return out
 
 
 def close_prices(raw: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
@@ -52,21 +76,63 @@ def close_prices(raw: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
     return prices
 
 
-def _month_end_prices(prices: pd.DataFrame) -> pd.DataFrame:
-    """Last available price of each calendar month."""
-    try:
-        return prices.resample("ME").last()
-    except ValueError:  # pandas < 2.2 does not know the "ME" alias
-        return prices.resample("M").last()
-
-
-def monthly_returns(prices: pd.DataFrame, today: pd.Timestamp = None) -> pd.DataFrame:
-    """Simple monthly returns on the common sample, without the current (incomplete) month."""
+def month_end_prices(prices: pd.DataFrame, today: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """Prices on the last common trading day of each month (index = that day), common sample,
+    without the current (incomplete) month."""
     today = pd.Timestamp.today() if today is None else pd.Timestamp(today)
     common = prices.dropna(how="any")
-    monthly = _month_end_prices(common)
-    monthly = monthly[monthly.index.to_period("M") < today.to_period("M")]
-    return monthly.pct_change(fill_method=None).dropna(how="any")
+    last = common.groupby(common.index.to_period("M")).tail(1)
+    return last[last.index.to_period("M") < today.to_period("M")]
+
+
+def _at_dates(daily: pd.Series, dates: pd.DatetimeIndex) -> pd.Series:
+    """Last known value of a daily series on each date."""
+    return daily.reindex(daily.index.union(dates)).ffill().reindex(dates)
+
+
+def hedge_carry(dates: pd.DatetimeIndex, usd_1y: pd.Series, chf_1y: pd.Series) -> pd.Series:
+    """(1 + r_CHF) / (1 + r_USD) on each date: yearly factor of a 1-year forward (covered parity)."""
+    months = dates.to_period("M")
+    rates = chf_1y.reindex(chf_1y.index.union(months)).ffill().reindex(months)
+    return (1.0 + pd.Series(rates.values, index=dates)) / (1.0 + _at_dates(usd_1y, dates))
+
+
+def currency_facts(month_end: pd.DataFrame, usdchf: pd.Series, usd_1y: pd.Series,
+                   chf_1y: pd.Series) -> Dict[str, float]:
+    """Sample average and latest yearly effect of the hedge, and yearly drift of USD/CHF."""
+    carry = hedge_carry(month_end.index, usd_1y, chf_1y) - 1.0
+    S = _at_dates(usdchf, month_end.index)
+    drift = (S.iloc[-1] / S.iloc[0]) ** (MONTHS_PER_YEAR / (len(S) - 1)) - 1.0
+    return {"carry_mean": float(carry.iloc[:-1].mean()), "carry_last": float(carry.iloc[-1]),
+            "fx_drift": float(drift)}
+
+
+def real_chf_returns(month_end: pd.DataFrame, usdchf: pd.Series, usd_1y: pd.Series, chf_1y: pd.Series,
+                     cpi: pd.Series, hedged: bool, assets: Dict[str, Dict] = ASSETS) -> pd.DataFrame:
+    """Monthly real returns in CHF from month-end local prices.
+
+    Unhedged (USD assets):  (1 + R) S_{t+1} / S_t - 1,  S = CHF per USD on the return dates.
+    Hedged (USD assets):    (1 + R) ((1 + r_CHF) / (1 + r_USD))^dt - 1, dt = 1/12, 1-year rates known
+                            at the start of the period (covered interest parity, forward rolled monthly).
+    CHF assets are never hedged. Then divided by the growth of the Swiss CPI. Months whose CPI is
+    not published yet are dropped. Monthly inputs (chf_1y, cpi) have a period index; a missing
+    recent value of chf_1y is replaced by the last known one.
+    """
+    nominal = month_end.pct_change(fill_method=None)
+    months = month_end.index.to_period("M")
+
+    if hedged:
+        carry = hedge_carry(month_end.index, usd_1y, chf_1y)
+        factor = (carry ** (1.0 / MONTHS_PER_YEAR)).shift(1)
+    else:
+        S = _at_dates(usdchf, month_end.index)
+        factor = S / S.shift(1)
+    usd = [t for t in month_end.columns if assets[t]["ccy"] == "USD"]
+    nominal[usd] = (1.0 + nominal[usd]).mul(factor, axis=0) - 1.0
+
+    index = pd.Series(cpi.reindex(months).values, index=month_end.index)
+    real = (1.0 + nominal).div(index / index.shift(1), axis=0) - 1.0
+    return real.dropna(how="any")
 
 
 def validate_returns(rets: pd.DataFrame, tickers: List[str],
@@ -88,16 +154,6 @@ def estimate_moments(rets: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame, int]:
     mu = rets.mean() * MONTHS_PER_YEAR
     sigma = rets.cov() * MONTHS_PER_YEAR
     return mu, sigma, len(rets)
-
-
-def to_real(nominal, inflation: float):
-    """Exact Fisher conversion of a nominal rate (scalar or array) into a real rate."""
-    return (1.0 + nominal) / (1.0 + inflation) - 1.0
-
-
-def vol_to_real(vol, inflation: float):
-    """Volatility of the real return (1+R)/(1+pi) - 1 for a deterministic inflation pi."""
-    return vol / (1.0 + inflation)
 
 
 # --------------------------------------------------------------------------------------

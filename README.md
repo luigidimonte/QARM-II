@@ -2,22 +2,26 @@
 
 A Streamlit web app for a **FIRE (Financial Independence, Retire Early)** client. For a client profile, it shows the probability of reaching the FIRE capital by a target age. The money is invested in a constrained mean-variance portfolio whose risk tolerance γ adapts every year.
 
-- **Universe**: one ETF per asset class, downloaded fresh from Yahoo Finance (monthly, dividends reinvested). The ETFs are SPY (US equities), EWL (Swiss equities), EEM (emerging-markets equities), IEF (sovereign bonds), LQD (corporate bonds) and GLD (gold).
+- **Universe**: one ETF per asset class from Yahoo Finance (monthly total returns): SPY (US equities), SMICHA.SW (Swiss equities, CHF), EEM (emerging-markets equities), VNQ (US real estate), IEF (sovereign bonds), LQD (corporate bonds), TIP (US inflation-linked bonds) and GLD (gold). Before 2013 Yahoo has no dividends for Zurich-listed ETFs, so SMICHA.SW is backfilled with the SMI total-return index (SMIC.SW).
+- **Currency and inflation** (project layer): USD returns are converted to CHF, hedged (default) or unhedged, and deflated with the Swiss CPI. μ and Σ are estimated on these real CHF returns.
+- **Risk-free rate**: real rate for the remaining horizon, interpolated on the SNB Confederation spot curve; used only to discount future savings.
 - **Optimisation (LN 1)**: the γ-problem `min ½ x'Σx − γ x'μ` subject to `1'x = 1`, `0 ≤ x_i ≤ 40%` and `x_GLD ≥ 10%`. It is solved numerically with cvxpy. The σ-problem maps a volatility target to γ.
-- **Estimation error (LN 3)**: Michaud resampling of the constrained frontier. A Ledoit–Wolf shrinkage comparison is shown in the technical details.
+- **Estimation error (LN 3)**: Michaud resampling of the constrained frontier, following slides 11-12 (1'000 draws). A Ledoit–Wolf shrinkage comparison is shown in the technical details.
 - **Dynamic risk**: `γ_t = γ_min + (γ_0 − γ_min) · H_t / (W_t + H_t)`, where `H_t` is the present value of the remaining savings. Once `W_t ≥ K`, `γ_t = γ_min`.
-- **Probability of FIRE**: the first two moments of wealth are propagated year by year, then a lognormal is fitted. No Monte Carlo.
+- **Probability of FIRE** (project layer, not from the course): Monte Carlo simulation of wealth with γ_t computed on each path and jointly lognormal yearly returns. The probability is the share of paths with `W_T ≥ K` at the target age, shown with its Monte Carlo standard error, a fan chart and the distribution of final wealth.
 
-Assumptions: single currency (FX ignored), real terms (exact Fisher relation), no transaction costs.
+Assumptions: amounts in today's CHF, currency hedge by covered interest parity (no cross-currency basis), no transaction costs. The *Technical details* tab lists them all.
 
 ## Files
 
 | File | Content |
 |---|---|
 | `app_fire.py` | Streamlit UI only |
-| `data.py` | download, monthly returns, annualised μ and Σ, Ledoit–Wolf δ |
+| `data.py` | asset configuration, price download, CHF conversion, hedging, deflation, annualised μ and Σ, Ledoit–Wolf δ |
+| `market.py` | USD/CHF and US 1-year rate (FRED), Confederation curve and Swiss CPI (SNB), risk-free rate |
+| `data/` | local copies used if FRED or the SNB cannot be reached |
 | `optimizer.py` | constraints (`CONFIG`), γ-problem, σ-problem, resampling |
-| `fire.py` | FIRE capital, dynamic γ, glide path and trades, probability of FIRE |
+| `fire.py` | FIRE capital, dynamic γ, Monte Carlo simulation of wealth, probability of FIRE |
 | `tests/` | sanity tests (synthetic data, no network) |
 | `app.py`, `download_data.py`, `etf_returns.csv` | first prototype, kept for reference |
 
@@ -32,7 +36,7 @@ pip install -r requirements.txt
 streamlit run app_fire.py
 ```
 
-The first run downloads the data and computes the resampled portfolios, which takes a few seconds. After that, results are cached for one day.
+The first run downloads the data and computes the resampled portfolios, which takes about half a minute. After that, results are cached for one day.
 
 Tests:
 
