@@ -12,3 +12,4 @@ __pycache__/
 # not used by the app, not ours to redistribute
 data/MSCI*.xlsx
 *MSCI*.xlsx
+lab/

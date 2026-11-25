@@ -5,7 +5,7 @@ A Streamlit web app for a **FIRE (Financial Independence, Retire Early)** client
 - **Universe**: one ETF per asset class from Yahoo Finance (monthly total returns): SPY (US equities), SMICHA.SW (Swiss equities, CHF), EEM (emerging-markets equities), VNQ (US real estate), IEF (sovereign bonds), LQD (corporate bonds), TIP (US inflation-linked bonds) and GLD (gold). Before 2013 Yahoo has no dividends for Zurich-listed ETFs, so SMICHA.SW is backfilled with the SMI total-return index (SMIC.SW).
 - **Currency and inflation** (project layer): USD returns are converted to CHF, hedged (default) or unhedged, and deflated with the Swiss CPI. μ and Σ are estimated on these real CHF returns.
 - **Risk-free rate**: real rate for the remaining horizon, interpolated on the SNB Confederation spot curve; used only to discount future savings.
-- **Optimisation (LN 1)**: the γ-problem `min ½ x'Σx − γ x'μ` subject to `1'x = 1`, `0 ≤ x_i ≤ 40%` and `x_GLD ≥ 10%`. It is solved numerically with cvxpy. The σ-problem maps a volatility target to γ.
+- **Optimisation (LN 1)**: the γ-problem `min ½ x'Σx − γ x'μ` subject to `1'x = 1`, `0 ≤ x_i ≤ 40%` and `x_GLD ≥ 10%`. It is solved numerically with `scipy.optimize.minimize`, as in the course labs (Markowitz LN1, Stability LN3). The σ-problem maps a volatility target to γ.
 - **Estimation error (LN 3)**: Michaud resampling of the constrained frontier, following slides 11-12 (1'000 draws). A Ledoit–Wolf shrinkage comparison is shown in the technical details.
 - **Dynamic risk**: `γ_t = γ_min + (γ_0 − γ_min) · H_t / (W_t + H_t)`, where `H_t` is the present value of the remaining savings. Once `W_t ≥ K`, `γ_t = γ_min`.
 - **Probability of FIRE** (project layer, not from the course): Monte Carlo simulation of wealth with γ_t computed on each path and jointly lognormal yearly returns. The probability is the share of paths with `W_T ≥ K` at the target age, shown with its Monte Carlo standard error, a fan chart and the distribution of final wealth.
@@ -36,7 +36,7 @@ pip install -r requirements.txt
 streamlit run app_fire.py
 ```
 
-The first run downloads the data and computes the resampled portfolios, which takes about half a minute. After that, results are cached for one day.
+The first run downloads the data and computes the resampled portfolios, which takes about a minute. After that, results are cached for one day.
 
 Tests:
 
