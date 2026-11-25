@@ -22,8 +22,7 @@ import ui_style as ui
 
 # numpy 2.0.x + macOS Accelerate emits spurious FP warnings in matmul (results are correct).
 warnings.filterwarnings("ignore", message=".*encountered in matmul", category=RuntimeWarning)
-
-st.set_page_config(page_title="FIRE Planner", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Switzerland FIRE Planner", layout="wide", initial_sidebar_state="collapsed")
 ui.inject_css()
 
 TICKERS: List[str] = list(data.UNIVERSE)
@@ -247,9 +246,7 @@ def questionnaire(model: Dict) -> None:
     with st.container(border=True):
         if step == 0:
             st.subheader("Welcome", anchor=False)
-            st.write("**FIRE** means *Financial Independence, Retire Early*: saving and investing enough "
-                     "to live on your investments and stop depending on a salary. Answer a few questions "
-                     "and we will show you how likely you are to get there, and how to invest on the way.")
+            st.write("Enter your name below to begin the 6-step questionnaire, or load an example client.")
             field(st.text_input, "What is your name?", "name", placeholder="Optional")
             st.caption("Or start from an example client.")
             for col, name in zip(st.columns(len(PRESETS)), PRESETS):
@@ -906,9 +903,16 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, sim: fire.WealthSimu
 # ----------------------------------------------------------------------------- main
 def main() -> None:
     init_state()
-    ui.header("When can you stop working?",
-              f"A plan that invests your savings in {len(TICKERS)} ETFs "
-              "and lowers its risk as you get closer to financial independence.")
+    ui.header(
+        "FIRE Planner",
+        "<strong>FIRE</strong> (<em>Financial Independence, Retire Early</em>) means building enough "
+        f"invested wealth to live on your portfolio without depending on a salary. "
+        "Use our tool to discover when you can achieve financial independence. "
+        f"Our analysis is built on portfolio optimization across {len(TICKERS)} distinct securities, "
+        "progressively lowering risk as you approach your goal. "
+        "Enter your details below to uncover your ideal allocation and projected path to FIRE.",
+        eyebrow="Quantitative Wealth & Retirement Planning",
+    )
 
     try:
         opt.check_feasibility(TICKERS)
