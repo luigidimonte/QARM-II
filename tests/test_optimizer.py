@@ -153,12 +153,13 @@ def resampled(moments, bounds):
 @pytest.mark.parametrize("frac", [0.05, 0.3, 0.5, 0.8, 0.97])
 def test_resampled_sigma_problem_hits_target(moments, resampled, frac):
     """Realised volatility of the averaged weights (original Sigma) equals the target."""
-    _, sigma = moments
+    mu, sigma = moments
     gammas, W, (lo, hi, _) = resampled
     target = lo + frac * (hi - lo)
     gamma, status = opt.solve_sigma_resampled(target, gammas, W, sigma)
     assert status == "ok" and gammas[0] <= gamma <= gammas[-1]
-    assert opt.resampled_vol(gamma, gammas, W, sigma) == pytest.approx(target, abs=1e-8)
+    x = opt.interp_weights(gamma, gammas, W)
+    assert opt.portfolio_stats(x, mu, sigma)[1] == pytest.approx(target, abs=1e-8)
     assert_feasible(opt.interp_weights(gamma, gammas, W)[None, :])
 
 

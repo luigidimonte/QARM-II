@@ -819,11 +819,11 @@ def tab_technical(model: Dict, profile: fire.ClientProfile, sim: fire.WealthSimu
                  r"\text{u.c. } \mathbf 1^\top x=1,\; 0\le x_i\le 0.40,\; x_{GLD}\ge 0.10")
         st.write(f"γ ≥ 0 is the risk tolerance. γ = 0 is the constrained minimum-variance portfolio "
                  f"(σ⁻ = {pct(sig_minus, 2)}); the constrained frontier ends at σ⁺ = {pct(sig_plus, 2)} "
-                 f"(reached at γ ≈ {gamma_hi:.3g}). No closed form because of the bounds: solved as a QP with cvxpy. "
+                 f"(reached at γ ≈ {gamma_hi:.3g}). No closed form because of the bounds: solved as a QP with scipy (minimize). "
                  f"Using excess returns μ − r_f·1 (LN 2/3) gives the same x* because 1ᵀx = 1, so r_f "
                  f"does not change the optimal weights.")
         st.write(f"σ-problem: γ such that the resampled portfolio at γ (see below), evaluated with the "
-                 f"original μ̂ and Σ̂, has volatility σ*; solved with Brent's method, so the portfolios "
+                 f"original μ̂ and Σ̂, has volatility σ*; solved with scipy (fsolve), so the portfolios "
                  f"actually held hit the risk targets exactly. "
                  f"σ_min = {pct(gb['sigma_min'], 2)} → γ_min = {gb['gamma_min']:.4f}; "
                  f"σ_max = {pct(gb['sigma_max'], 2)} → γ₀ = {gb['gamma_0']:.4f}.")
@@ -931,7 +931,7 @@ def main() -> None:
         st.error("The market data is not usable: " + " ".join(problems))
         st.stop()
     try:
-        with st.spinner("Estimating portfolios. This takes about half a minute on first run."):
+        with st.spinner("Estimating portfolios. This takes about a minute on first run."):
             model = build_model(rets, bool(st.session_state["hedged"]), opt.CONFIG["n_resamples"], opt.CONFIG["seed"])
     except Exception as e:
         st.error(f"The portfolio optimisation failed ({e}). Please reload the page.")

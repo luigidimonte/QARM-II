@@ -278,7 +278,8 @@ def test_held_portfolio_volatility_equals_risk_targets(setup):
     volatility sigma_max."""
     mu, sigma, _, gammas, W, gb = setup
     for g, target in ((gb["gamma_0"], gb["sigma_max"]), (gb["gamma_min"], gb["sigma_min"])):
-        assert opt.resampled_vol(g, gammas, W, sigma) == pytest.approx(target, abs=1e-8)
+        x = opt.interp_weights(g, gammas, W)
+        assert opt.portfolio_stats(x, mu, sigma)[1] == pytest.approx(target, abs=1e-8)
     start = PROFILE.with_changes(wealth=0.0)
     path = fire.simulate_wealth(start, make_grid(setup), RF, N, 7).path
     assert fire.start_volatility(start, make_grid(setup), RF) == pytest.approx(path["s"].iloc[0])
