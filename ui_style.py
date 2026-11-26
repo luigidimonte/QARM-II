@@ -1,265 +1,602 @@
 """Presentation layer for app_fire.py: CSS, colour palette, Plotly template and table helpers.
-
 Nothing in here computes anything; it only decides how results look.
 """
 from __future__ import annotations
-
 from typing import Callable, Dict, Optional
+import html
+import json
 
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-
+import streamlit.components.v1 as components
 # ----------------------------------------------------------------------------- palette (single source)
-NAVY = "#0B192C"        # deep Swiss institutional navy: primary text, headers, hero
-BLUE = "#1E3A5F"        # dark navy accent
-STEEL = "#5C6B73"       # muted steel grey
-MIST = "#F4F6F8"        # cool alabaster surface
-LINE = "#D8DCE3"        # crisp thin borders and gridlines
-GREY = "#64748B"        # secondary captions and labels
-GOLD = "#C59B27"        # muted gold accent (γ line)
-RED = "#C8102E"         # Swiss crimson red accent
-FAN_OUTER = "rgba(11, 25, 44, 0.08)"
-FAN_INNER = "rgba(11, 25, 44, 0.18)"
-REACHED = "#1B5E4B"     # forest green for paths reaching FIRE
-MISSED = "#B43B20"      # dark crimson for paths missing FIRE
 
+NAVY = "#111111" # editorial black: primary text and controls
+BLUE = "#7897C5" # restrained institutional blue accent
+STEEL = "#6A7078" # muted steel grey
+MIST = "#F4F4F6" # pale card surface
+LINE = "#DADCE0" # soft borders and gridlines
+GREY = "#73777D" # secondary captions and labels
+GOLD = "#A88A4B" # muted gold accent (chart colorway)
+RED = "#111111" # retained API constant; monochrome visual treatment
+FAN_OUTER = "rgba(17, 17, 17, 0.07)"
+FAN_INNER = "rgba(17, 17, 17, 0.16)"
+REACHED = "#245A49" # forest green for paths reaching FIRE
+MISSED = "#A24735" # muted red for paths missing FIRE
+# header band: change the burgundy here, in one place
+ACCENT_BURGUNDY = "#7A1F2B" # header background; white text on it: 10.2:1 contrast (WCAG AA)
+HERO_TEXT = "#FFFFFF" # title and "+" box on the burgundy band
+HERO_LEAD = "#F3E6E8" # intro paragraph: 8.4:1 on the burgundy
+TABLE_ROW = "#FAFBFC" # table body rows (as before, with st.dataframe)
+TABLE_GRID = "#E2E4E7" # lines between table cells
+TABLE_BORDER = "#E2E4E7" # outer table border
+TABLE_RADIUS = "0.5rem" # rounded table corners; they also clip the burgundy header row
+BUTTON_RADIUS = "999px" # corner radius of every button: "999px" = pill, e.g. "10px" for softer corners
 # one hue per asset
+
 ASSET_COLORS: Dict[str, str] = {
-    "SPY": "#0B192C",
-    "SMICHA.SW": "#C8102E",
-    "EEM": "#5B21B6",
-    "VNQ": "#BE185D",
-    "IEF": "#1B5E4B",
-    "LQD": "#0F766E",
-    "TIP": "#4D7C0F",
-    "GLD": "#C59B27",
+    "SPY": "#111111",
+    "SMICHA.SW": "#7897C5",
+    "EEM": "#536F96",
+    "VNQ": "#8E9CAD",
+    "IEF": "#315C50",
+    "LQD": "#66847A",
+    "TIP": "#8D805E",
+    "GLD": "#A88A4B",
 }
 OUTLINE = dict(color="#FFFFFF", width=1)
-
-FONT_URL = ("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700"
-            "&family=JetBrains+Mono:wght@500&display=swap")
-SANS = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif'
-SERIF = '"Times New Roman", Times, "Liberation Serif", Georgia, serif'
-MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
-
+# Computer Modern (LaTeX look) for the whole app, in one place. Web font: Computer Modern Unicode
+# Serif (SIL Open Font License) from jsDelivr, pinned to a commit of dreampulse/computer-modern-web-font.
+# Only regular, bold, italic and bold italic exist: weights up to 500 render as 400, 600+ as bold.
+# .streamlit/config.toml repeats this stack for st.dataframe, which draws on a canvas (CSS cannot reach
+# it); tests/test_ui_style.py checks that the two stay the same.
+FONT_URL = ("https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@"
+            "e9977be1283466992a2dede47a342655d8426fee/font/Serif/cmun-serif.css")
+FONT_STACK = "'Computer Modern Serif', 'Latin Modern Roman', 'STIX Two Text', Georgia, serif"
 # ----------------------------------------------------------------------------- Plotly template
+
 pio.templates["fire"] = go.layout.Template(layout=go.Layout(
-    font=dict(family=SANS, size=13, color=NAVY),
+    font=dict(family=FONT_STACK, size=14, color=NAVY),
     paper_bgcolor="#FFFFFF",
     plot_bgcolor="#FFFFFF",
-    colorway=[BLUE, STEEL, NAVY, "#8FA3BC", GOLD, MIST],
+    colorway=[BLUE, STEEL, NAVY, "#9CA5B0", GOLD, MIST],
     xaxis=dict(automargin=True, showgrid=False, zeroline=False, showline=True, linecolor=LINE, linewidth=1,
-               ticks="outside", tickcolor=LINE, ticklen=4,
-               title=dict(font=dict(family=SANS, size=12, color=GREY))),
-    yaxis=dict(automargin=True, showgrid=True, gridcolor="#ECEFF4", gridwidth=1, zeroline=False, showline=False,
-               title=dict(font=dict(family=SANS, size=12, color=GREY))),
+            ticks="outside", tickcolor=LINE, ticklen=4,
+            title=dict(font=dict(family=FONT_STACK, size=12, color=GREY))),
+    yaxis=dict(automargin=True, showgrid=True, gridcolor="#ECEDEF", gridwidth=1, zeroline=False, showline=False,
+            title=dict(font=dict(family=FONT_STACK, size=12, color=GREY))),
     legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0,
-                font=dict(family=SANS, size=12, color=NAVY), bgcolor="rgba(0,0,0,0)"),
-    hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=LINE, font=dict(family=SANS, size=12, color=NAVY)),
+            font=dict(family=FONT_STACK, size=12, color=NAVY), bgcolor="rgba(0,0,0,0)"),
+    hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=LINE, font=dict(family=FONT_STACK, size=12, color=NAVY)),
     margin=dict(l=10, r=10, t=30, b=10),
     hovermode="closest",
     separators=".'",
 ))
 pio.templates.default = "fire"
 
-
 def show(fig: go.Figure, **kwargs) -> None:
     """Render a figure with our own template (Streamlit's theme would override the palette)."""
     st.plotly_chart(fig, theme=None, config={"displaylogo": False}, **kwargs)
 
-
 # ----------------------------------------------------------------------------- tables
-def show_table(df: pd.DataFrame, formats: Optional[Dict[str, Callable]] = None,
-               hide_index: bool = True) -> None:
-    sty = df.style.format(formats or {}, na_rep="-")
-    st.dataframe(sty, hide_index=hide_index, width="stretch")
 
+def show_table(df: pd.DataFrame, formats: Optional[Dict[str, Callable]] = None,
+                hide_index: bool = True, align: Optional[str] = None) -> None:
+    """Static table (st.table, HTML), so that it gets the table style of the CSS below like every
+    other table: burgundy header row, black text (st.dataframe draws on a canvas CSS cannot style).
+    Cells are aligned by type (text left, numbers right) unless `align` ("left"/"right") is given,
+    e.g. for numbers already formatted as text."""
+    formats = dict(formats or {})
+    if hide_index:                       # st.table ignores Styler.hide: show the first column as the
+        first = df.columns[0]            # row labels instead (header kept, no 0..n column)
+        df = df.set_index(first)
+        first_format = formats.pop(first, None)
+    sty = df.style.format(formats, na_rep="-")
+    if hide_index and first_format is not None:
+        sty = sty.format_index(first_format, axis="index")
+    if align:
+        sty = sty.set_properties(**{"text-align": f"{align} !important"})   # beats Streamlit's inline style
+    st.table(sty)
 
 # ----------------------------------------------------------------------------- CSS
+
 CSS = f"""
 <style>
 @import url('{FONT_URL}');
 :root {{
-  --navy: {NAVY}; --crimson: {RED}; --accent: {BLUE}; --slate: {STEEL}; --surface: {MIST}; --line: {LINE}; --muted: {GREY};
-  --radius: 4px; --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --shadow: 0 1px 3px rgba(11, 25, 44, 0.05);
-  --shadow-hover: 0 6px 18px rgba(11, 25, 44, 0.08);
+--ink: {NAVY};
+--accent: {BLUE};
+--slate: {STEEL};
+--surface: {MIST};
+--line: {LINE};
+--muted: {GREY};
+--radius: 0px;
+--ease: cubic-bezier(0.22, 1, 0.36, 1);
+--shadow-hover: 0 12px 30px rgba(17, 17, 17, 0.075);
+}}
+@keyframes fpFadeUp {{
+from {{ opacity: 0; transform: translateY(12px); }}
+to {{ opacity: 1; transform: translateY(0); }}
+}}
+@keyframes fpLineIn {{
+from {{ transform: scaleX(0); }}
+to {{ transform: scaleX(1); }}
 }}
 html, body, [class*="st-"], .stMarkdown, .stText, button, input, textarea, select, label {{
-  font-family: {SANS}; -webkit-font-smoothing: antialiased;
+font-family: {FONT_STACK};
+-webkit-font-smoothing: antialiased;
 }}
 [data-testid="stIconMaterial"] {{ font-family: "Material Symbols Rounded" !important; }}
-.stApp, [data-testid="stAppViewContainer"] {{ background: #F8F9FB; color: var(--navy); overflow-x: hidden; }}
-
-/* layout */
-[data-testid="stMainBlockContainer"], .block-container {{
-  max-width: 1140px; padding: 0rem 2rem 4rem 2rem;
-}}
-@media (max-width: 640px) {{
-  [data-testid="stMainBlockContainer"], .block-container {{ padding: 0rem 1rem 3rem 1rem; }}
-}}
-header[data-testid="stHeader"] {{ background: var(--navy) !important; }}
+.stApp, [data-testid="stAppViewContainer"] {{ background: #FFFFFF; color: var(--ink); overflow-x: hidden; }}
+/* Streamlit chrome */
+header[data-testid="stHeader"] {{ background: {ACCENT_BURGUNDY} !important; }}
 header[data-testid="stHeader"] button,
+header[data-testid="stHeader"] a,
 header[data-testid="stHeader"] span,
-header[data-testid="stHeader"] svg {{ color: #E2E8F0 !important; fill: #E2E8F0 !important; }}
-
-/* Full-bleed solid navy hero banner */
-.fp-hero {{
-  background-color: var(--navy);
-  width: 100vw;
-  position: relative;
-  left: 50%;
-  right: 50%;
-  margin-left: -50vw;
-  margin-right: -50vw;
-  padding: 4rem 0 2.6rem 0;
-  border-bottom: 3px solid var(--crimson);
-  margin-bottom: 2rem;
+header[data-testid="stHeader"] svg {{ color: {HERO_TEXT} !important; fill: {HERO_TEXT} !important; }}
+header[data-testid="stHeader"] button:hover {{ background: rgba(255,255,255,0.12) !important; }}
+/* Layout: wide, editorial, with generous white space */
+[data-testid="stMainBlockContainer"], .block-container {{
+max-width: 1320px;
+padding: 0 2.5rem 5rem 2.5rem;
 }}
-.fp-hero-inner {{
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 0 2rem;
+@media (max-width: 720px) {{
+[data-testid="stMainBlockContainer"], .block-container {{ padding: 0 1rem 3rem 1rem; }}
 }}
-@media (max-width: 640px) {{
-  .fp-hero {{ padding: 3.5rem 0 2rem 0; }}
-  .fp-hero-inner {{ padding: 0 1rem; }}
+/* Hero: keep the existing content, change only its presentation */
+.st-key-fp_hero {{
+background: {ACCENT_BURGUNDY};
+width: 100vw;
+position: relative;
+left: 50%;
+right: 50%;
+margin-left: -50vw;
+margin-right: -50vw;
+padding: 6.25rem max(2.5rem, calc((100vw - 1320px) / 2 + 2.5rem)) 2.4rem;
+gap: 0 !important;
+margin-top: -1rem;
+margin-bottom: 1.6rem;
+overflow: hidden;
+box-shadow: 0 -4rem 0 0 {ACCENT_BURGUNDY};
+}}
+.st-key-fp_hero::after {{
+content: "";
+position: absolute;
+left: 0;
+right: 0;
+bottom: 0;
+height: 1px;
+background: rgba(255,255,255,0.18);
+transform-origin: left center;
+animation: fpLineIn 700ms var(--ease) both;
+}}
+.st-key-fp_hero > div {{ animation: fpFadeUp 520ms var(--ease) both; }}
+.st-key-fp_hero {{ width: 100vw !important; max-width: 100vw !important; box-sizing: border-box; }}
+.st-key-fp_hero iframe {{ display: block; }}
+/* the rotating-text iframe sizes itself to its tallest slide: let its wrapper follow */
+.st-key-fp_hero [data-testid="stElementContainer"]:has(iframe) {{ height: auto !important; flex: 0 0 auto !important; }}
+@media (max-width: 720px) {{
+.st-key-fp_hero {{ padding: 5rem 1rem 1.8rem 1rem; }}
 }}
 .fp-hero-title-row {{
-  display: flex; align-items: center; gap: 0.9rem; margin-bottom: 1rem;
+display: flex;
+flex-wrap: wrap;
+align-items: center;
+justify-content: center;
+text-align: center;
+gap: 0.95rem;
+margin-bottom: 1.2rem;
 }}
 .fp-hero-swiss-cross {{
-  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
-  width: 34px; height: 34px; background-color: var(--crimson);
-  color: #FFFFFF; font-family: {SANS}; font-weight: 700; font-size: 1.25rem; border-radius: 4px;
-  line-height: 1;
+display: inline-flex;
+align-items: center;
+justify-content: center;
+flex-shrink: 0;
+width: 30px;
+height: 30px;
+color: {HERO_TEXT};
+background: transparent;
+border: 1px solid {HERO_TEXT};
+font-weight: 500;
+font-size: 0.95rem;
+line-height: 1;
 }}
-.fp-hero .fp-hero-title {{
-  font-family: {SERIF} !important;
-  font-size: 3.5rem !important;
-  font-weight: 700 !important;
-  color: #FFFFFF !important;
-  margin: 0 !important;
-  letter-spacing: -0.01em;
-  line-height: 1.1;
+.st-key-fp_hero .fp-hero-title {{
+font-family: {FONT_STACK} !important;
+font-size: clamp(2.7rem, 4.8vw, 4.6rem) !important;
+font-weight: 400 !important;
+color: {HERO_TEXT} !important;
+margin: 0 !important;
+letter-spacing: -0.02em;
+overflow-wrap: anywhere;
+line-height: 1.02;
 }}
-@media (max-width: 640px) {{
-  .fp-hero .fp-hero-title {{ font-size: 2.3rem !important; }}
+/* Typography */
+h1, h2, h3, h1 *, h2 *, h3 * {{ color: var(--ink) !important; }}
+h1, h2 {{ font-family: {FONT_STACK} !important; }}
+h2 {{
+font-size: 2rem !important;
+font-weight: 400 !important;
+letter-spacing: -0.035em;
+line-height: 1.2 !important;
 }}
-.fp-hero-lead {{
-  font-family: {SANS};
-  font-size: 1.02rem;
-  color: #D8E0EA;
-  max-width: 50rem;
-  line-height: 1.65;
-  margin: 0;
+h3 {{
+font-family: {FONT_STACK} !important;
+font-size: 1.12rem !important;
+font-weight: 600 !important;
+letter-spacing: -0.015em;
+padding-top: 0.2rem !important;
 }}
-.fp-hero-lead strong {{ color: #FFFFFF; font-weight: 600; }}
-.fp-hero-lead em {{ color: #F1F5F9; font-style: italic; }}
-
-/* typography for the rest of the app (Inter) */
-h1, h2, h3, h1 *, h2 *, h3 * {{ font-family: {SANS} !important; color: var(--navy) !important; }}
-h2 {{ font-size: 1.45rem !important; font-weight: 600 !important; letter-spacing: -0.015em; }}
-h3 {{ font-size: 1.15rem !important; font-weight: 600 !important; padding-top: 0.3rem !important; }}
-p, li {{ font-size: 0.98rem; line-height: 1.6; }}
-[data-testid="stCaptionContainer"], .stCaption {{ color: var(--muted) !important; font-size: 0.86rem; }}
+p, li {{ font-size: 1.06rem; line-height: 1.62; color: #1F1F1F; }}
+[data-testid="stCaptionContainer"], .stCaption {{ color: #5F6368 !important; font-size: 0.93rem; }}
+[data-testid="stCaptionContainer"] p {{ font-size: 0.93rem; color: #5F6368 !important; }}
 .fp-eyebrow {{
-  display: inline-block; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--accent); margin-bottom: 0.35rem;
+display: inline-block;
+font-size: 0.8rem;
+font-weight: 600;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+color: var(--muted);
+margin-bottom: 0.45rem;
 }}
-
-/* cards with subtle Navy top border accent */
+/* Main content appears softly, without changing the DOM/content */
+[data-testid="stMainBlockContainer"] > div > div > div:not(.st-key-fp_hero) {{
+animation: fpFadeUp 480ms 80ms var(--ease) both;
+}}
+/* Cards / bordered Streamlit containers: pale grey, flat, institutional */
 [data-testid="stVerticalBlockBorderWrapper"] {{
-  border-color: var(--line) !important; border-radius: var(--radius) !important;
-  border-top: 3px solid var(--navy) !important;
-  background: #FFFFFF; box-shadow: var(--shadow);
+border: 0 !important;
+border-radius: var(--radius) !important;
+background: #F4F4F6;
+box-shadow: none;
+padding: 0.35rem;
+transition: transform 220ms var(--ease), box-shadow 260ms var(--ease), background-color 220ms ease;
 }}
+[data-testid="stVerticalBlockBorderWrapper"]:hover {{
+transform: translateY(-2px);
+box-shadow: var(--shadow-hover);
+background: #F2F2F4;
+}}
+/* Metric cards stay quieter and more analytical */
 [data-testid="stMetric"] {{
-  position: relative; overflow: hidden; background: #FFFFFF;
-  border: 1px solid var(--line); border-top: 3px solid var(--navy); border-radius: var(--radius);
-  padding: 1rem 1.2rem; box-shadow: var(--shadow);
-  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+position: relative;
+overflow: hidden;
+background: #FFFFFF;
+border: 1px solid var(--line);
+border-radius: var(--radius);
+padding: 1rem 1.15rem;
+box-shadow: none;
+transition: transform 180ms var(--ease), box-shadow 220ms var(--ease), border-color 180ms ease;
 }}
-[data-testid="stMetric"]:hover {{ transform: translateY(-2px); box-shadow: var(--shadow-hover); border-color: #B2B8C2; }}
-[data-testid="stMetricLabel"] p {{ font-size: 0.82rem !important; font-weight: 500; color: var(--muted) !important; }}
+[data-testid="stMetric"]::before {{
+content: "";
+position: absolute;
+top: 0;
+left: 0;
+width: 100%;
+height: 2px;
+background: var(--ink);
+transform: scaleX(0);
+transform-origin: left;
+transition: transform 240ms var(--ease);
+}}
+[data-testid="stMetric"]:hover {{
+transform: translateY(-2px);
+box-shadow: 0 9px 22px rgba(17,17,17,0.065);
+border-color: #BFC2C7;
+}}
+[data-testid="stMetric"]:hover::before {{ transform: scaleX(1); }}
+[data-testid="stMetricLabel"] p {{
+font-size: 0.88rem !important;
+font-weight: 500;
+letter-spacing: 0.01em;
+color: var(--muted) !important;
+}}
 [data-testid="stMetricValue"] {{
-  color: var(--navy) !important; font-family: {SANS} !important; font-weight: 600; font-size: 1.6rem !important;
-  font-variant-numeric: tabular-nums;
+color: var(--ink) !important;
+font-family: {FONT_STACK} !important;
+font-weight: 400;
+font-size: 1.7rem !important;
+font-variant-numeric: lining-nums tabular-nums;
 }}
-
-/* progress bar */
+/* Progress */
+[data-testid="stProgress"] > div {{ background: #ECEEF2 !important; border-radius: 0 !important; }}
 [data-testid="stProgress"] > div > div > div > div {{
-  background: var(--navy) !important; border-radius: var(--radius);
+background: var(--accent) !important;
+border-radius: 0 !important;
+transition: width 500ms var(--ease);
 }}
-
-/* buttons */
+/* Buttons: restrained black/white system with subtle motion */
 .stButton > button, [data-testid^="stBaseButton"] {{
-  border-radius: var(--radius) !important; font-weight: 500; font-size: 0.94rem;
-  transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease), background-color 0.2s ease;
+border-radius: 0 !important;
+min-height: 2.65rem;
+padding-left: 1rem !important;
+padding-right: 1rem !important;
+font-weight: 500;
+font-size: 1rem;
+letter-spacing: 0;
+transition: transform 150ms var(--ease), box-shadow 200ms var(--ease), background-color 180ms ease,
+color 180ms ease, border-color 180ms ease;
 }}
-.stButton > button:hover, [data-testid^="stBaseButton"]:hover {{ transform: translateY(-1px); }}
+.stButton > button:hover, [data-testid^="stBaseButton"]:hover {{
+transform: translateY(-1px);
+}}
 [data-testid="stBaseButton-primary"] {{
-  background: var(--navy) !important; border: 1px solid var(--navy) !important; color: #FFFFFF !important;
-  border-top: 2px solid var(--crimson) !important;
+background: var(--ink) !important;
+border: 1px solid var(--ink) !important;
+color: #FFFFFF !important;
 }}
+[data-testid="stBaseButton-primary"] p {{ color: #FFFFFF !important; }} /* label is a <p>: beat the global p colour */
 [data-testid="stBaseButton-primary"]:hover {{
-  background: #15263D !important; border-color: #15263D !important;
-  box-shadow: 0 4px 12px rgba(11, 25, 44, 0.16);
+background: #2A2A2A !important;
+border-color: #2A2A2A !important;
+box-shadow: 0 8px 18px rgba(17,17,17,0.13);
 }}
 [data-testid="stBaseButton-secondary"] {{
-  background: #FFFFFF !important; border: 1px solid var(--line) !important;
-  border-top: 2px solid var(--navy) !important; color: var(--navy) !important;
+background: transparent !important;
+border: 1px solid #CFCFD2 !important;
+color: var(--ink) !important;
 }}
-[data-testid="stBaseButton-secondary"]:hover {{ border-color: var(--navy) !important; background: #F8FAFC !important; }}
-
-/* inputs */
-[data-baseweb="input"], [data-baseweb="select"] > div {{ border-radius: var(--radius) !important; }}
-[data-baseweb="input"]:focus-within {{ box-shadow: 0 0 0 2px rgba(11, 25, 44, 0.12); }}
-
-/* tabs */
-[data-testid="stTabs"] [role="tablist"] {{ border-bottom: 1px solid var(--line); gap: 1.5rem; }}
-[data-testid="stTabs"] [role="tab"] p {{ font-size: 0.94rem; font-weight: 500; color: var(--muted); }}
-[data-testid="stTabs"] [role="tab"]:hover p {{ color: var(--navy); }}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] p {{ color: var(--navy); font-weight: 600; }}
-[data-testid="stTabs"] [data-baseweb="tab-highlight"] {{ background-color: var(--crimson) !important; height: 2px; }}
-
-/* tables */
-[data-testid="stTable"] table {{ border-collapse: collapse; width: 100%; }}
+/* Rounded buttons: only the corner radius changes (BUTTON_RADIUS). button[...] has the specificity of
+   ".stButton > button" above and comes later, so it wins; toolbar and chart/table icons stay square. */
+button[data-testid="stBaseButton-primary"],
+button[data-testid="stBaseButton-secondary"],
+button[data-testid="stBaseButton-tertiary"],
+[data-testid="stFormSubmitButton"] button,
+[data-testid="stDownloadButton"] button,
+button[data-testid^="stBaseButton-pills"],
+button[data-testid^="stBaseButton-segmented_control"] {{ border-radius: {BUTTON_RADIUS} !important; }}
+[data-testid="stBaseButton-secondary"]:hover {{
+border-color: var(--ink) !important;
+background: #FFFFFF !important;
+box-shadow: 0 6px 16px rgba(17,17,17,0.055);
+}}
+/* Inputs */
+[data-baseweb="input"], [data-baseweb="select"] > div {{
+border-radius: 0 !important;
+background: #FFFFFF !important;
+}}
+[data-baseweb="input"]:focus-within,
+[data-baseweb="select"] > div:focus-within {{
+box-shadow: 0 0 0 1px var(--ink) !important;
+}}
+input, textarea {{ caret-color: var(--accent); }}
+/* Sliders / radio / checkbox accents */
+.stSlider [data-baseweb="slider"] [role="slider"] {{
+background: var(--ink) !important;
+border: 2px solid #FFFFFF;
+box-shadow: 0 0 0 1px var(--ink) !important;
+transition: transform 120ms ease;
+}}
+.stSlider [data-baseweb="slider"] [role="slider"]:hover {{ transform: scale(1.08); }}
+.stSlider [data-baseweb="slider"] > div > div > div {{ background: var(--accent) !important; }}
+/* Tabs */
+[data-testid="stTabs"] [role="tablist"] {{
+border-bottom: 1px solid var(--line);
+gap: 1.6rem;
+}}
+[data-testid="stTabs"] [role="tab"] p {{
+font-size: 1.02rem;
+font-weight: 500;
+color: var(--muted);
+transition: color 160ms ease;
+}}
+[data-testid="stTabs"] [role="tab"]:hover p {{ color: var(--ink); }}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] p {{ color: var(--ink); font-weight: 600; }}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {{
+background-color: {ACCENT_BURGUNDY} !important;
+height: 2px;
+}}
+/* Dividers */
+hr, [data-testid="stDivider"] {{ border-color: var(--line) !important; }}
+/* Tables */
+/* every table (ui.show_table and st.table): burgundy header row, black body text, light rows */
+[data-testid="stTable"] {{
+border: 1px solid {TABLE_BORDER};
+border-radius: {TABLE_RADIUS};
+overflow: hidden;
+background: {TABLE_ROW};
+}}
+[data-testid="stTable"] table {{ border-collapse: separate; border-spacing: 0; width: 100%; border: none !important; }}
 [data-testid="stTable"] th, [data-testid="stTable"] td {{
-  background: transparent !important; border: none !important; border-bottom: 1px solid var(--line) !important;
-  padding: 0.55rem 0.75rem; font-size: 0.9rem;
+background: {TABLE_ROW} !important;
+color: #000000 !important;
+border: none !important;
+border-right: 1px solid {TABLE_GRID} !important;
+border-bottom: 1px solid {TABLE_GRID} !important;
+padding: 0.62rem 0.75rem;
+font-size: 0.97rem;
 }}
-[data-testid="stTable"] td {{ text-align: right !important; font-family: {MONO}; font-size: 0.85rem; }}
-[data-testid="stTable"] th {{ color: var(--muted); font-weight: 500; text-align: right !important; }}
-[data-testid="stTable"] tbody th {{ text-align: left !important; color: var(--navy); }}
-[data-testid="stTable"] tbody tr:hover {{ background: var(--surface); }}
+[data-testid="stTable"] tr > :last-child {{ border-right: none !important; }}
+[data-testid="stTable"] tbody tr:last-child > * {{ border-bottom: none !important; }}
+[data-testid="stTable"] p {{ color: inherit !important; }}   /* cell text is a <p>: beat the global p colour */
+[data-testid="stTable"] thead th {{
+background: {ACCENT_BURGUNDY} !important;
+color: {HERO_TEXT} !important;
+text-align: left !important;
+border-right-color: rgba(255,255,255,0.18) !important;
+border-bottom: none !important;
+}}
+[data-testid="stTable"] td {{
+font-family: {FONT_STACK};
+font-size: 0.97rem;
+font-variant-numeric: lining-nums tabular-nums;
+}}
+[data-testid="stTable"] th {{ font-weight: 500; }}
+[data-testid="stTable"] tbody th {{ text-align: left !important; }}
+[data-testid="stTable"] tbody tr > * {{ transition: background-color 140ms ease; }}
+[data-testid="stTable"] tbody tr:hover > * {{ background: #F2F3F5 !important; }}
 [data-testid="stDataFrame"] {{
-  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+border: 1px solid var(--line);
+border-radius: 0;
+overflow: hidden;
+background: #FFFFFF;
 }}
-
-/* expanders */
+/* Expanders */
 [data-testid="stExpander"] details {{
-  border: 1px solid var(--line) !important; border-radius: var(--radius) !important; background: #FFFFFF;
+border: 1px solid var(--line) !important;
+border-radius: 0 !important;
+background: #FFFFFF;
+transition: border-color 160ms ease, box-shadow 200ms ease;
 }}
-[data-testid="stExpander"] summary p {{ font-size: 0.95rem; font-weight: 500; color: var(--navy); }}
+[data-testid="stExpander"] details:hover {{
+border-color: #BFC2C7 !important;
+box-shadow: 0 6px 16px rgba(17,17,17,0.04);
+}}
+[data-testid="stExpander"] summary p {{ font-size: 1.02rem; font-weight: 500; color: var(--ink); }}
+/* Alerts */
+[data-testid="stAlert"] {{ border-radius: 0 !important; }}
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {{
+*, ::before, ::after {{
+animation-duration: 0.001ms !important;
+animation-iteration-count: 1 !important;
+transition-duration: 0.001ms !important;
+scroll-behavior: auto !important;
+}}
+}}
 </style>
 """
-
 
 def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
 
+# ----------------------------------------------------------------------------- header with rotating facts
 
-def header(title: str, lead: str, eyebrow: str = "") -> None:
-    st.markdown(
-        f'<div class="fp-hero"><div class="fp-hero-inner">'
-        f'  <div class="fp-hero-title-row">'
-        f'    <div class="fp-hero-swiss-cross">✚</div>'
-        f'    <div class="fp-hero-title">{title}</div>'
-        f'  </div>'
-        f'  <p class="fp-hero-lead">{lead}</p>'
-        f'</div></div>',
-        unsafe_allow_html=True,
-    )
+# Slides 2..N of the header (slide 1 is the intro paragraph). Edit the texts here, in one place.
+FIRE_FACTS = [
+    {"title": "Where it started",
+     "text": "The ideas behind FIRE go back to the 1992 book “Your Money or Your Life” by Vicki Robin and "
+             "Joe Dominguez. Dominguez had left a Wall Street career in his early thirties."},
+    {"title": "A blog boom",
+     "text": "Jacob Lund Fisker’s “Early Retirement Extreme” (2010) and the Mr. Money Mustache blog "
+             "(started in 2011) helped turn the idea into an online movement."},
+    {"title": "Many flavours",
+     "text": "Lean FIRE (frugal), Fat FIRE (comfortable spending), Barista FIRE (part-time work covers part "
+             "of the costs) and Coast FIRE (save early, then let it grow until the traditional retirement age)."},
+    {"title": "Going mainstream",
+     "text": "The movement reached a wide audience around 2018. In a late-2020 survey of US adults by Shopify "
+             "and the Angus Reid Group, 9% of non-retired adults said they were actively pursuing FIRE and "
+             "39% were considering it."},
+    {"title": "Savings rate is the lever",
+     "text": "FIRE followers often aim to save 50–70% of their income. Spending less both raises what you "
+             "save and lowers the capital you need."},
+]
+ROTATE_SECONDS = 30
+
+# Client-side carousel in its own iframe (st.components.v1.html), so it keeps rotating while Python
+# computes. The slides are stacked in one grid cell: the widget is as tall as its longest slide at the
+# current width and never changes height between slides; the (same-origin) iframe sets its own height.
+_ROTATOR = """<!doctype html><html><head><meta charset="utf-8"><style>
+@import url('__FONT_URL__');
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+body { font-family: __FONT__; color: __LEAD__; -webkit-font-smoothing: antialiased; }
+.rot { max-width: 60rem; margin: 0 auto; text-align: center; }
+.slides { display: grid; }
+.slide { grid-area: 1 / 1; margin: 0; font-size: 1.08rem; line-height: 1.68; opacity: 0; visibility: hidden;
+         transition: opacity 400ms ease, visibility 0s linear 400ms; }
+.slide.on { opacity: 1; visibility: visible; transition: opacity 400ms ease, visibility 0s; }
+.slide strong, .title { color: __TEXT__; font-weight: 700; }
+.slide em { font-style: italic; }
+.title { display: block; margin-bottom: 0.15rem; }
+.nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.1rem; margin-top: 0.75rem; }
+button { font: inherit; color: __TEXT__; background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
+         opacity: 0.7; transition: opacity 150ms ease; }
+button:hover, button:focus-visible, .dot.on { opacity: 1; }
+button:focus-visible { outline: 1px solid __TEXT__; outline-offset: 2px; }
+.arrow { width: 2rem; height: 2rem; font-size: 1.5rem; line-height: 1; }
+.dot { width: 1.3rem; height: 2rem; display: inline-flex; align-items: center; justify-content: center; }
+.dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: __TEXT__; opacity: 0.55; }
+.dot.on::before { opacity: 1; transform: scale(1.25); }
+@media (prefers-reduced-motion: reduce) { .slide, .slide.on { transition: none; } }
+</style></head><body>
+<div class="rot" id="rot" role="region" aria-roledescription="carousel" aria-label="About FIRE">
+  <div class="slides">__SLIDES__</div>
+  <div class="nav">
+    <button class="arrow" id="prev" type="button" aria-label="Previous">&lsaquo;</button>__DOTS__
+    <button class="arrow" id="next" type="button" aria-label="Next">&rsaquo;</button>
+  </div>
+</div>
+<script>
+(function () {
+  var slides = document.querySelectorAll(".slide"), dots = document.querySelectorAll(".dot");
+  var n = slides.length, DELAY = __DELAY__, TICK = 250, K_IDX = "fp_header_slide", K_LAST = "fp_header_last";
+  function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+  function save(k, v) { try { sessionStorage.setItem(k, String(v)); } catch (e) {} }
+  // Slide index and the time of the last slide change survive a remount of the iframe, so a
+  // remount neither resets the slide nor restarts the countdown.
+  var i = parseInt(load(K_IDX), 10), last = parseInt(load(K_LAST), 10), now = Date.now();
+  if (!(i >= 0 && i < n)) i = 0;
+  if (!(last <= now && now - last < 2 * DELAY)) last = now;          // new or stale session
+  var hoverUntil = 0;     // no auto-advance before this time; a resting mouse pauses at most DELAY
+  function restart() { last = Date.now(); save(K_LAST, last); }      // fresh countdown
+  function show(k) {
+    i = (k + n) % n;
+    for (var j = 0; j < n; j++) {
+      slides[j].classList.toggle("on", j === i); slides[j].setAttribute("aria-hidden", j === i ? "false" : "true");
+      dots[j].classList.toggle("on", j === i); dots[j].setAttribute("aria-current", j === i ? "true" : "false");
+    }
+    save(K_IDX, i);
+  }
+  function go(k) { show(k); restart(); }
+  function tick() {                      // setTimeout chain: compares elapsed time, so throttled or late
+    var t = Date.now();                  // timers just catch up (one step) instead of drifting
+    if (t >= hoverUntil && t - last >= DELAY) go(i + 1);
+    setTimeout(tick, TICK);
+  }
+  function hovering(e) { if (e.pointerType === "mouse") hoverUntil = Date.now() + DELAY; }
+  function leave() { if (hoverUntil) { hoverUntil = 0; restart(); } }
+  document.getElementById("prev").onclick = function () { go(i - 1); };
+  document.getElementById("next").onclick = function () { go(i + 1); };
+  for (var j = 0; j < n; j++) (function (k) { dots[k].onclick = function () { go(k); }; })(j);
+  var rot = document.getElementById("rot");
+  rot.addEventListener("pointerenter", hovering);
+  rot.addEventListener("pointermove", hovering);
+  rot.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") leave(); });
+  document.documentElement.addEventListener("mouseleave", leave);     // left the iframe
+  window.addEventListener("blur", leave);
+  document.addEventListener("visibilitychange", function () { if (document.hidden) leave(); });
+  function fit() {                       // iframe height = tallest slide + controls
+    try {
+      var f = window.frameElement, h = Math.ceil(rot.getBoundingClientRect().height) + 2;
+      if (f && Math.abs(f.getBoundingClientRect().height - h) > 1) f.style.height = h + "px";
+    } catch (e) {}
+  }
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(rot);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+  window.addEventListener("resize", fit);
+  show(i); save(K_LAST, last); fit();
+  setTimeout(tick, TICK);
+})();
+</script></body></html>"""
+
+
+def rotator_html(lead: str) -> str:
+    """Header carousel: slide 1 = lead (HTML written in app_fire.py), then FIRE_FACTS (escaped)."""
+    slides = [lead] + [f'<span class="title">{html.escape(f["title"])}</span>{html.escape(f["text"])}'
+                       for f in FIRE_FACTS]
+    body = "".join(f'<p class="slide" role="group" aria-label="{k + 1} of {len(slides)}">{s}</p>'
+                   for k, s in enumerate(slides))
+    dots = "".join(f'<button class="dot" type="button" aria-label="Show {k + 1} of {len(slides)}"></button>'
+                   for k in range(len(slides)))
+    out = _ROTATOR
+    for key, val in (("__FONT_URL__", FONT_URL), ("__FONT__", FONT_STACK), ("__LEAD__", HERO_LEAD),
+                     ("__TEXT__", HERO_TEXT), ("__DELAY__", json.dumps(ROTATE_SECONDS * 1000)),
+                     ("__SLIDES__", body), ("__DOTS__", dots)):
+        out = out.replace(key, val)
+    return out
+
+
+def header(title: str, lead: str) -> None:
+    """Burgundy header: title, then the rotating intro paragraph / FIRE facts."""
+    with st.container(key="fp_hero"):
+        st.markdown(
+            f'<div class="fp-hero-title-row">'
+            f'<div class="fp-hero-swiss-cross">✚</div>'
+            f'<div class="fp-hero-title">{title}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        components.html(rotator_html(lead), height=230)

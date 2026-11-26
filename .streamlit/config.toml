@@ -4,4 +4,6 @@ primaryColor = "#2563EB"
 backgroundColor = "#FAFBFC"
 secondaryBackgroundColor = "#F1F5F9"
 textColor = "#0F172A"
-font = "sans serif"
+# Same stack as ui_style.FONT_STACK (and same CDN file as ui_style.FONT_URL): st.dataframe draws on a
+# canvas, so only the theme font reaches it. tests/test_ui_style.py checks that the two agree.
+font = "Computer Modern Serif:https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@e9977be1283466992a2dede47a342655d8426fee/font/Serif/cmun-serif.css, Latin Modern Roman, STIX Two Text, Georgia, serif"

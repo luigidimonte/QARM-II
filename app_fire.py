@@ -798,8 +798,8 @@ def what_if(profile: fire.ClientProfile, sim: fire.WealthSimulation, grid: fire.
     idx = ["Savings rate", "Yearly expenses", "FIRE capital", "Target age", "Chance by target age",
            "Standard error"] + \
           [f"Age with {lv:.0%} chance" for lv in fire.PROB_LEVELS]
-    st.table(pd.DataFrame({"Current plan": col(profile, summary), "Alternative": col(alt, alt_summary)},
-                          index=idx))
+    ui.show_table(pd.DataFrame({"Current plan": col(profile, summary), "Alternative": col(alt, alt_summary)},
+                               index=idx), hide_index=False, align="right")
 
 
 # ----------------------------------------------------------------------------- main
@@ -813,7 +813,6 @@ def main() -> None:
         f"Our analysis is built on portfolio optimization across {len(TICKERS)} distinct securities, "
         "progressively lowering risk as you approach your goal. "
         "Enter your details below to uncover your ideal allocation and projected path to FIRE.",
-        eyebrow="Quantitative Wealth & Retirement Planning",
     )
 
     lower, upper = current_bounds()

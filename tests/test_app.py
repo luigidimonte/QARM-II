@@ -64,7 +64,7 @@ def test_results_show_probability_fan_chart_and_standard_error(app):
     assert "5th to 95th percentile" in charts(app) and "FIRE capital reached" in charts(app)
     app.slider(key="wi_rate").set_value(60).run()                    # What if reacts
     assert not app.exception
-    chance = app.table[0].value.loc["Chance by target age"]
+    chance = what_if_table(app).loc["Chance by target age"]
     assert chance["Alternative"] != chance["Current plan"]
 
 
@@ -154,9 +154,14 @@ def test_widgets_are_restored_when_a_step_is_shown_again(app):
 
 
 # ----------------------------------------------------------------------------- investment preferences
+def what_if_table(at) -> pd.DataFrame:
+    """The What if comparison (several st.table on the page: ui.show_table renders tables with it)."""
+    return next(t.value for t in at.table if "Chance by target age" in t.value.index)
+
+
 def allocation(at) -> pd.Series:
-    df = next(d.value for d in at.dataframe if "Weight" in d.value.columns and "Amount" in d.value.columns)
-    return df.set_index("ETF")["Weight"]
+    df = next(t.value for t in at.table if "Weight" in t.value.columns and "Amount" in t.value.columns)
+    return df["Weight"]                  # ui.show_table: st.table with the ETF column as row labels
 
 
 def count_resampling(monkeypatch):
@@ -327,11 +332,11 @@ def test_what_if_reset_restores_the_questionnaire_answers(app):
     assert (rate, age) == (43, 55)                                       # 65'000 / 150'000, target 55
     app.slider(key="wi_rate").set_value(70).run()
     app.slider(key="wi_age").set_value(60).run()
-    changed = app.table[0].value.loc["Chance by target age", "Alternative"]
+    changed = what_if_table(app).loc["Chance by target age", "Alternative"]
     next(b for b in app.button if b.label == "Reset to initial answers").click().run()
     assert not app.exception
     assert (app.slider(key="wi_rate").value, app.slider(key="wi_age").value) == (rate, age)
-    chance = app.table[0].value.loc["Chance by target age"]
+    chance = what_if_table(app).loc["Chance by target age"]
     assert chance["Alternative"] == chance["Current plan"] != changed
 
 
@@ -345,7 +350,7 @@ def test_resampling_runs_once_at_submit_and_never_for_other_answers(app, monkeyp
     assert calls == []
     next(b for b in app.button if b.label == "Show my plan").click().run()
     assert app.session_state["step"] == RESULTS and len(calls) == 1 and not app.exception
-    p0 = app.table[0].value.loc["Chance by target age", "Current plan"]
+    p0 = what_if_table(app).loc["Chance by target age", "Current plan"]
     for key, value in (("wi_rate", 60), ("wi_age", 58)):                 # What if
         app.slider(key=key).set_value(value).run()
     next(b for b in app.button if b.label == "Reset to initial answers").click().run()
@@ -360,7 +365,7 @@ def test_resampling_runs_once_at_submit_and_never_for_other_answers(app, monkeyp
         app.run()
         assert not app.exception and not app.error
     assert len(calls) == 1
-    assert app.table[0].value.loc["Chance by target age", "Current plan"] != p0   # the plan did change
+    assert what_if_table(app).loc["Chance by target age", "Current plan"] != p0   # the plan did change
     set_hedging(app, False)                                              # inputs of the resampling
     assert len(calls) == 2
     set_adjustment(app, 1.0)
