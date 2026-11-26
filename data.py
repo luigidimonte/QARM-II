@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 
 # backfill: (proxy ticker, first day of the ETF's own data). Yahoo has no dividends before 2013
@@ -26,7 +25,6 @@ ASSETS: Dict[str, Dict] = {
     "GLD": dict(name="Gold", asset_class="Gold", ccy="USD"),
 }
 UNIVERSE: Dict[str, str] = {t: a["name"] for t, a in ASSETS.items()}
-GOLD_TICKER = "GLD"
 START_DATE = "2000-01-01"
 MIN_MONTHS = 60
 MONTHS_PER_YEAR = 12
@@ -97,16 +95,6 @@ def hedge_carry(dates: pd.DatetimeIndex, usd_1y: pd.Series, chf_1y: pd.Series) -
     return (1.0 + pd.Series(rates.values, index=dates)) / (1.0 + _at_dates(usd_1y, dates))
 
 
-def currency_facts(month_end: pd.DataFrame, usdchf: pd.Series, usd_1y: pd.Series,
-                   chf_1y: pd.Series) -> Dict[str, float]:
-    """Sample average and latest yearly effect of the hedge, and yearly drift of USD/CHF."""
-    carry = hedge_carry(month_end.index, usd_1y, chf_1y) - 1.0
-    S = _at_dates(usdchf, month_end.index)
-    drift = (S.iloc[-1] / S.iloc[0]) ** (MONTHS_PER_YEAR / (len(S) - 1)) - 1.0
-    return {"carry_mean": float(carry.iloc[:-1].mean()), "carry_last": float(carry.iloc[-1]),
-            "fx_drift": float(drift)}
-
-
 def real_chf_returns(month_end: pd.DataFrame, usdchf: pd.Series, usd_1y: pd.Series, chf_1y: pd.Series,
                      cpi: pd.Series, hedged: bool, assets: Dict[str, Dict] = ASSETS) -> pd.DataFrame:
     """Monthly real returns in CHF from month-end local prices.
@@ -142,8 +130,6 @@ def validate_returns(rets: pd.DataFrame, tickers: List[str],
     missing = [t for t in tickers if t not in rets.columns or rets[t].isna().all()]
     if missing:
         problems.append(f"No data for: {', '.join(missing)}.")
-    if GOLD_TICKER not in tickers or GOLD_TICKER in missing:
-        problems.append(f"Gold ({GOLD_TICKER}) must be in the universe for the 10% gold floor.")
     if len(rets) < min_months:
         problems.append(f"Only {len(rets)} months of common history (need at least {min_months}).")
     return problems
@@ -156,65 +142,12 @@ def estimate_moments(rets: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame, int]:
     return mu, sigma, len(rets)
 
 
-# --------------------------------------------------------------------------------------
-# Ledoit & Wolf (2003), "Honey, I Shrunk the Sample Covariance Matrix",
-# constant-correlation target (Appendix A, eq. 3) and shrinkage intensity (Appendix B, eq. 5).
-# Used only as a comparison in the technical details of the app.
-# --------------------------------------------------------------------------------------
+def adjust_expected_returns(mu, adjustment: float):
+    """mu minus `adjustment` (yearly, e.g. 0.01 = 1 percentage point) for every asset.
 
-def constant_correlation_target(S: np.ndarray) -> Tuple[np.ndarray, float]:
-    """Target F: f_ii = s_ii, f_ij = rbar * sqrt(s_ii s_jj) (eq. 3). Returns (F, rbar)."""
-    n = S.shape[0]
-    sd = np.sqrt(np.diag(S))
-    r = S / np.outer(sd, sd)
-    rbar = (r.sum() - n) / (n * (n - 1))
-    F = rbar * np.outer(sd, sd)
-    np.fill_diagonal(F, np.diag(S))
-    return F, rbar
-
-
-def ledoit_wolf_delta(monthly: pd.DataFrame) -> float:
-    """Estimated optimal shrinkage intensity delta* = max(0, min(kappa/T, 1)) (eq. 5)."""
-    Y = np.asarray(monthly, dtype=float)
-    T, n = Y.shape
-    Xc = Y - Y.mean(axis=0)
-    S = Xc.T @ Xc / T                       # sample covariance with 1/T, as in the paper
-    F, rbar = constant_correlation_target(S)
-
-    # pi_hat = sum_ij (1/T) sum_t {(y_it - ybar_i)(y_jt - ybar_j) - s_ij}^2
-    pi_mat = np.empty((n, n))
-    for i in range(n):
-        for j in range(n):
-            pi_mat[i, j] = np.mean((Xc[:, i] * Xc[:, j] - S[i, j]) ** 2)
-    pi_hat = pi_mat.sum()
-
-    # theta[i, j] = (1/T) sum_t {(y_it - ybar_i)^2 - s_ii}{(y_it - ybar_i)(y_jt - ybar_j) - s_ij}
-    theta = np.empty((n, n))
-    for i in range(n):
-        for j in range(n):
-            theta[i, j] = np.mean((Xc[:, i] ** 2 - S[i, i]) * (Xc[:, i] * Xc[:, j] - S[i, j]))
-
-    # rho_hat = sum_i pi_ii + sum_{i != j} rbar/2 (sqrt(s_jj/s_ii) theta_ii,ij + sqrt(s_ii/s_jj) theta_jj,ij)
-    rho_hat = np.trace(pi_mat)
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                rho_hat += rbar / 2.0 * (np.sqrt(S[j, j] / S[i, i]) * theta[i, j]
-                                         + np.sqrt(S[i, i] / S[j, j]) * theta[j, i])
-
-    gamma_hat = np.sum((F - S) ** 2)
-    kappa_hat = (pi_hat - rho_hat) / gamma_hat
-    return float(max(0.0, min(kappa_hat / T, 1.0)))
-
-
-def shrunk_covariance(monthly: pd.DataFrame, sigma_annual: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
-    """Shrinkage estimator delta*F + (1-delta)*S (eq. 2) applied to the annualised sample covariance.
-
-    delta* is estimated on monthly data exactly as in the paper; it does not depend on the
-    scale of returns, so it is applied to the annualised covariance used everywhere else.
+    The historical means over the sample include a long equity bull market and the gold rally,
+    so they are optimistic as a forecast; the adjustment stresses that assumption. It is applied
+    before the optimisation and before the resampling draws (they are centred on the adjusted mu).
+    Sigma is not changed. adjustment = 0 returns mu unchanged.
     """
-    delta = ledoit_wolf_delta(monthly)
-    S = np.asarray(sigma_annual, dtype=float)
-    F, _ = constant_correlation_target(S)
-    shrunk = delta * F + (1.0 - delta) * S
-    return pd.DataFrame(shrunk, index=sigma_annual.index, columns=sigma_annual.columns), delta
+    return mu - adjustment

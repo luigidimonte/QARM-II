@@ -183,12 +183,6 @@ def target_portfolio(W, h: float, p: ClientProfile, grid: ResampledGrid, rf: Ris
     return r, H, g, opt.interp_weights(g, grid.gammas, grid.weights)
 
 
-def start_volatility(p: ClientProfile, grid: ResampledGrid, rf: RiskFree) -> float:
-    """Volatility of today's portfolio (no simulation needed)."""
-    x = target_portfolio(p.wealth, p.target_age - p.age, p, grid, rf)[3]
-    return opt.portfolio_stats(x, grid.mu, grid.sigma)[1]
-
-
 # --------------------------------------------------------------------------------------
 # Project layer (NOT from the course slides): Monte Carlo simulation of wealth.
 # --------------------------------------------------------------------------------------

@@ -282,11 +282,10 @@ def test_held_portfolio_volatility_equals_risk_targets(setup):
         assert opt.portfolio_stats(x, mu, sigma)[1] == pytest.approx(target, abs=1e-8)
     start = PROFILE.with_changes(wealth=0.0)
     path = fire.simulate_wealth(start, make_grid(setup), RF, N, 7).path
-    assert fire.start_volatility(start, make_grid(setup), RF) == pytest.approx(path["s"].iloc[0])
     assert path["gamma"].iloc[0] == pytest.approx(gb["gamma_0"])
     assert path["s"].iloc[0] == pytest.approx(gb["sigma_max"], abs=1e-8)
     assert path["s"].iloc[-1] == pytest.approx(gb["sigma_min"], abs=1e-8)
-    assert_feasible(fire.weights_table(path, TICKERS).values)            # 40% cap, 10% gold kept
+    assert_feasible(fire.weights_table(path, TICKERS).values)            # 30% cap, gold at most 15%
 
 
 def test_validate_profile():

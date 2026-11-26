@@ -1,15 +1,15 @@
+# environment and caches
 .venv/
 .idea/
-docs/
 __pycache__/
 .pytest_cache/
 *.pyc
 .DS_Store
 .streamlit/secrets.toml
+
+# course material: not ours to redistribute (public repo)
 docs/
-.venv/
-__pycache__/
-# not used by the app, not ours to redistribute
-data/MSCI*.xlsx
-*MSCI*.xlsx
 lab/
+*.pdf
+*.ipynb
+*MSCI*.xlsx

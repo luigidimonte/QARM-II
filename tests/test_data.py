@@ -70,13 +70,6 @@ def test_hedged_conversion_by_hand_uses_rates_at_the_start_of_the_period():
     np.testing.assert_allclose(r["C"], [0.02, 0.0])  # CHF assets are never hedged
 
 
-def test_currency_facts_by_hand():
-    f = data.currency_facts(ME, FX, USD1Y, CHF1Y)
-    assert f["carry_mean"] == pytest.approx(((1.01 / 1.05 - 1) + (1.00 / 1.04 - 1)) / 2)   # starts of the periods
-    assert f["carry_last"] == pytest.approx(1.02 / 1.03 - 1)
-    assert f["fx_drift"] == pytest.approx((0.99 / 0.95) ** (12 / 2) - 1)
-
-
 def test_stale_chf_rate_is_carried_forward():
     r = chf(True, chf_1y=CHF1Y.iloc[:1])
     assert r["U"].iloc[1] == pytest.approx(0.90 * (1.01 / 1.04) ** (1 / 12) - 1)
@@ -124,52 +117,12 @@ def test_close_prices_follow_requested_ticker_order():
 def test_validate_returns_flags_problems(monthly):
     assert data.validate_returns(monthly, TICKERS) == []
     no_gold = [t for t in TICKERS if t != "GLD"]
-    assert any("Gold" in p for p in data.validate_returns(monthly[no_gold], no_gold))
+    assert data.validate_returns(monthly[no_gold], no_gold) == []          # gold is optional
+    assert any("No data for: XYZ" in p for p in data.validate_returns(monthly, TICKERS + ["XYZ"]))
     assert any("months" in p for p in data.validate_returns(monthly.iloc[:30], TICKERS))
 
 
-def test_constant_correlation_target_diag(monthly):
-    S = monthly.cov().values
-    F, rbar = data.constant_correlation_target(S)
-    np.testing.assert_allclose(np.diag(F), np.diag(S))
-    np.testing.assert_allclose(F, F.T)
-    assert -1.0 <= rbar <= 1.0
-
-
-def _covcor_reference(x: np.ndarray) -> float:
-    """Independent vectorised port of Ledoit & Wolf's published covCor algorithm."""
-    t, n = x.shape
-    y = x - x.mean(axis=0)
-    sample = y.T @ y / t
-    var = np.diag(sample)
-    sqrtvar = np.sqrt(var)
-    rbar = (np.sum(sample / np.outer(sqrtvar, sqrtvar)) - n) / (n * (n - 1))
-    prior = rbar * np.outer(sqrtvar, sqrtvar)
-    np.fill_diagonal(prior, var)
-    y2 = y ** 2
-    phi_mat = y2.T @ y2 / t - 2 * (y.T @ y) * sample / t + sample ** 2
-    phi = phi_mat.sum()
-    term1 = (y ** 3).T @ y / t
-    help_ = y.T @ y / t
-    term2 = np.diag(help_)[:, None] * sample
-    term3 = help_ * var[:, None]
-    term4 = var[:, None] * sample
-    theta = term1 - term2 - term3 + term4
-    np.fill_diagonal(theta, 0.0)
-    rho = np.trace(phi_mat) + rbar * np.sum(np.outer(1 / sqrtvar, sqrtvar) * theta)
-    gamma = np.sum((sample - prior) ** 2)
-    return float(max(0.0, min(1.0, (phi - rho) / gamma / t)))
-
-
-def test_ledoit_wolf_delta_matches_reference_and_bounds(monthly):
-    delta = data.ledoit_wolf_delta(monthly)
-    assert 0.0 <= delta <= 1.0
-    assert delta == pytest.approx(_covcor_reference(monthly.values), rel=1e-10, abs=1e-12)
-
-
-def test_shrunk_covariance_is_convex_combination(monthly):
-    _, sigma, _ = data.estimate_moments(monthly)
-    shrunk, delta = data.shrunk_covariance(monthly, sigma)
-    F, _ = data.constant_correlation_target(sigma.values)
-    np.testing.assert_allclose(shrunk.values, delta * F + (1 - delta) * sigma.values)
-    np.testing.assert_allclose(np.diag(shrunk.values), np.diag(sigma.values))
+def test_expected_return_adjustment(monthly):
+    mu, sigma, _ = data.estimate_moments(monthly)
+    pd.testing.assert_series_equal(data.adjust_expected_returns(mu, 0.0), mu)           # 0: unchanged
+    np.testing.assert_allclose(data.adjust_expected_returns(mu, 0.015).values, mu.values - 0.015)
