@@ -399,3 +399,31 @@ def test_manual_risk_range(app, monkeypatch):
     assert not app.exception and len(calls) == 1
     row = next(m.value for m in app.markdown if "set manually" in m.value)
     assert f"minimum risk setting {lo + 1.0:.2f}%" in row and f"maximum risk setting {lo + 2.0:.2f}%" in row
+
+
+# ----------------------------------------------------------------------------- no wealth yet
+def test_zero_wealth_shows_the_target_mix_without_amounts(app):
+    app.session_state["step"] = RESULTS
+    app.session_state["wealth"] = 0
+    app.run()
+    assert not app.exception and not app.error
+    table = next(t.value for t in app.table if "Weight" in t.value.columns and "Asset class" in t.value.columns
+                 and "New target weight" not in t.value.columns)
+    assert "Amount" not in table.columns
+    weights = table["Weight"].astype(float)
+    assert weights.notna().all() and weights.sum() == pytest.approx(1.0)
+    assert "Target mix" in charts(app) and "Total invested" not in charts(app)
+    captions = " ".join(c.value for c in app.caption)
+    assert "You start with CHF 0. These weights apply to your first savings" in captions
+    assert "Expected return" in captions
+    trades = next(t.value for t in app.table if "New target weight" in t.value.columns)
+    assert (trades["Trade"] == "Buy").all() and trades["Amount"].sum() > 0     # first savings invested
+
+
+def test_zero_wealth_and_zero_savings_is_stopped_with_a_message(app):
+    app.session_state["step"] = RESULTS
+    app.session_state["wealth"] = 0
+    app.session_state["income"] = app.session_state["expenses"] = 60_000
+    app.run()
+    assert not app.exception
+    assert any("nothing to invest" in e.value for e in app.error)

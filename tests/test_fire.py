@@ -426,3 +426,36 @@ def test_target_age_at_or_after_the_horizon(grid):
         assert sim.path["age"].iloc[-1] == T and (sim.wealth >= 0).all()
         s = fire.fire_summary(sim.path, T)
         assert s["p_last"] == 1.0 and s["se_last"] == 0.0                  # nothing spent before 95
+
+
+# --------------------------------------------------------------- no wealth yet
+def test_zero_wealth_with_savings_runs_without_nan(grid):
+    p = PROFILE.with_changes(wealth=0.0)
+    assert fire.validate_profile(p) == ([], [])
+    assert fire.gamma_t(0.0, p.savings, 20, 0.01, 1e6, 0.8, 0.2) == pytest.approx(0.8)   # all human capital
+    sim = fire.simulate_wealth(p, grid, RF, n_paths=N, seed=1)
+    path = sim.path
+    assert not path.drop(columns="rf").isna().any().any()
+    assert np.isfinite(sim.wealth).all() and sim.wealth.min() >= 0.0
+    W = fire.weights_table(path, TICKERS)
+    np.testing.assert_allclose(W.sum(axis=1), 1.0, atol=1e-9)
+    first = path.iloc[1]                                 # nothing held yet: the trades invest the savings
+    trades = np.array([first[f"trade_amt_{t}"] for t in TICKERS])
+    np.testing.assert_allclose(trades, W.iloc[1].values * p.savings, rtol=1e-9)
+    summary = fire.fire_summary(path, p.target_age)
+    assert 0.0 < summary["p_target"] <= 1.0 and 0.0 <= summary["p_last"] <= 1.0
+
+
+@pytest.mark.parametrize("income", [60_000, 50_000])        # savings 0 and negative
+def test_zero_wealth_and_no_savings(grid, income):
+    p = PROFILE.with_changes(wealth=0.0, income=income)
+    errors, _ = fire.validate_profile(p)
+    assert errors == ["With no wealth and no savings there is nothing to invest."]
+    g = fire.gamma_t(0.0, p.savings, 20, 0.01, 1e6, 0.8, 0.2)       # W + H <= 0: no division by zero
+    assert np.isfinite(g) and g == pytest.approx(0.2)
+    if p.savings == 0:                                    # still a graceful result if simulated
+        sim = fire.simulate_wealth(p, grid, RF, n_paths=N, seed=1)
+        assert not sim.path.drop(columns="rf").isna().any().any()
+        assert (sim.wealth == 0.0).all()
+        s = fire.fire_summary(sim.path, p.target_age)
+        assert s["p_target"] == 0.0 and s["p_last"] == 0.0

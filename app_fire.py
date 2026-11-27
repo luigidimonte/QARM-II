@@ -648,8 +648,9 @@ def donut_chart(x: np.ndarray, tickers: List[str], wealth: Optional[float] = Non
                            hovertemplate="%{customdata} (%{label})<br>%{value:.1%}<extra></extra>"))
     annotations = []
     if wealth is not None:
+        label, value = ("Total invested", chf(wealth)) if wealth > 0 else ("Target mix", "100%")
         annotations.append(dict(
-            text=f"<span style='font-size:11px;color:{GREY}'>Total invested</span><br><b>{chf(wealth)}</b>",
+            text=f"<span style='font-size:11px;color:{GREY}'>{label}</span><br><b>{value}</b>",
             x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=NAVY),
         ))
     fig.update_layout(height=390, margin=dict(t=0, b=16, l=36, r=0), showlegend=False,
@@ -663,8 +664,10 @@ PCT1 = "{:.1%}".format
 
 
 def allocation_table(x: np.ndarray, wealth: float, tickers: List[str]) -> pd.DataFrame:
-    return pd.DataFrame({"ETF": tickers, "Asset class": [data.UNIVERSE[t] for t in tickers],
-                         "Weight": list(x), "Amount": [w * wealth for w in x]})
+    out = pd.DataFrame({"ETF": tickers, "Asset class": [data.UNIVERSE[t] for t in tickers], "Weight": list(x)})
+    if wealth > 0:
+        out["Amount"] = [w * wealth for w in x]
+    return out
 
 
 def trade_table(row: pd.Series, tickers: List[str]) -> pd.DataFrame:
@@ -748,11 +751,16 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
     st.subheader("Your portfolio today", anchor=False)
     c1, c2 = st.columns([1.4, 1], gap="large", vertical_alignment="top")
     with c1:
-        ui.show_table(allocation_table(x_today, profile.wealth, tickers), {"Weight": PCT1, "Amount": chf})
-        st.caption(f"Expected return {pct(path['m'].iloc[0], 2)} (real, {mu_label(model['mu_adj'])}) and "
-                   f"volatility {pct(path['s'].iloc[0], 2)} (real) per year, i.e. after inflation. The expected "
-                   f"return is an average of past returns ({model['start']:%b %Y} - {model['end']:%b %Y}), "
-                   f"not a forecast.")
+        table = allocation_table(x_today, profile.wealth, tickers)
+        ui.show_table(table, {k: f for k, f in {"Weight": PCT1, "Amount": chf}.items() if k in table})
+        risk = (f"Expected return {pct(path['m'].iloc[0], 2)} (real, {mu_label(model['mu_adj'])}) and "
+                f"volatility {pct(path['s'].iloc[0], 2)} (real) per year, i.e. after inflation.")
+        if profile.wealth > 0:
+            st.caption(f"{risk} The expected return is an average of past returns "
+                       f"({model['start']:%b %Y} - {model['end']:%b %Y}), not a forecast.")
+        else:
+            st.caption(f"You start with CHF\u00a00. These weights apply to your first savings "
+                       f"({chf(profile.savings)}). {risk}")
     with c2:
         ui.show(donut_chart(x_today, tickers, profile.wealth))
     st.divider()

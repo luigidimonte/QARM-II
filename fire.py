@@ -57,7 +57,9 @@ def validate_profile(p: ClientProfile) -> Tuple[List[str], List[str]]:
         errors.append("Yearly expenses must be positive.")
     if p.wealth < 0:
         errors.append("Current wealth cannot be negative.")
-    if p.savings <= 0:
+    if p.wealth <= 0 and p.savings <= 0:
+        errors.append("With no wealth and no savings there is nothing to invest.")
+    elif p.savings <= 0:
         warnings.append("Expenses are at least as high as income: there are no yearly savings, "
                         "so wealth can only grow through returns.")
     return errors, warnings
