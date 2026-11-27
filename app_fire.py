@@ -345,7 +345,7 @@ def show_risk_free(h: int) -> None:
         return
     if rf.override is not None:
         st.metric("Risk-free rate used (real)", pct(rf.override, 2))
-        st.caption("Set manually, the same for every horizon.")
+        st.caption("Set manually, the same for every horizon ($r_f$).")
     else:
         st.metric(f"Risk-free rate for {h} years (real)", pct(rf.real(h), 2))
         st.caption(f"Swiss Confederation curve, {m.curve_date:%B %Y} (month-end): "
@@ -491,7 +491,7 @@ def questionnaire(rets: pd.DataFrame) -> None:
                 st.error(e)
             ok = not errors
 
-    back, nxt, _ = st.columns([1, 1, 4])
+    back, _, nxt = st.columns([1, 2.5, 1])
     if step > 0:
         back.button("Back", on_click=go_to, args=(step - 1,), width="stretch")
     if step < SUMMARY:
@@ -527,7 +527,7 @@ def prob_chart(paths: Dict[str, pd.DataFrame], target_ages: Dict[str, int]) -> g
     return fig
 
 
-N_SAMPLE_PATHS = 100
+N_SAMPLE_PATHS = 50
 POST_FIRE = "post-FIRE, minimum risk"
 
 
@@ -551,19 +551,19 @@ def fan_chart(sim: fire.WealthSimulation, K: float, target_age: int) -> go.Figur
                               ("Sample paths that miss K", sample[~ok], ui.MISSED)):
         xs = np.tile(np.append(path["age"].values.astype(float), np.nan), len(rows))   # NaN = pen up
         ys = np.column_stack([rows, np.full(len(rows), np.nan)]).ravel()
-        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(width=0.8, color=color), opacity=0.35,
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(width=0.7, color=color), opacity=0.25,
                                  connectgaps=False, showlegend=False, hoverinfo="skip", name=name))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(width=2, color=color),
                                  name=f"{name} ({len(rows)})"))                        # legend key
     fig.add_trace(go.Scatter(x=path["age"], y=path["q50"], name="Median", mode="lines",
-                             line=dict(width=2.5, color=BLUE), hovertemplate=hover))
-    fig.add_hline(y=K, line=dict(color=NAVY, width=1, dash="dash"), annotation_text=f"FIRE capital {chf(K)}",
-                  annotation_position="top left", annotation_font=dict(color=GREY, size=11))
-    fig.add_vline(x=target_age, line=dict(color=NAVY, width=1, dash="dash"),
+                             line=dict(width=3, color=ui.SLATE_BLUE), hovertemplate=hover))
+    fig.add_hline(y=K, line=dict(color=NAVY, width=1.2, dash="dash"), annotation_text=f"FIRE capital {chf(K)}",
+                  annotation_position="top left", annotation_font=dict(color=NAVY, size=12))
+    fig.add_vline(x=target_age, line=dict(color=NAVY, width=1.2, dash="dash"),
                   annotation_text=f"target {target_age}", annotation_position="top left",
-                  annotation_font=dict(color=GREY, size=11))
+                  annotation_font=dict(color=NAVY, size=12))
     fig.update_layout(xaxis_title="Age", yaxis_title="Today's CHF", yaxis_tickformat=",.0f",
-                      height=460, hovermode="x unified")
+                      yaxis_rangemode="tozero", height=540, hovermode="x unified")
     return fig
 
 
@@ -631,16 +631,26 @@ def glide_chart(weights: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def donut_chart(x: np.ndarray, tickers: List[str]) -> go.Figure:
+def donut_chart(x: np.ndarray, tickers: List[str], wealth: Optional[float] = None) -> go.Figure:
     held = np.asarray(x) > 1e-9                       # excluded / unused assets have no slice
     x, tickers = np.asarray(x)[held], [t for t, h in zip(tickers, held) if h]
-    fig = go.Figure(go.Pie(labels=tickers, values=x, hole=0.62, sort=False, direction="clockwise",
-                           marker=dict(colors=[COLORS.get(t) for t in tickers], line=ui.OUTLINE),
-                           textinfo="label", textfont=dict(size=11),
+    fig = go.Figure(go.Pie(labels=tickers, values=x, hole=0.54, sort=False, direction="clockwise",
+                           marker=dict(colors=[COLORS.get(t) for t in tickers],
+                                       line=dict(color="#FFFFFF", width=1.5)),
+                           textinfo="label", textposition="auto", textfont=dict(size=12),
+                           insidetextorientation="horizontal",
                            customdata=[data.UNIVERSE[t] for t in tickers],
                            hovertemplate="%{customdata} (%{label})<br>%{value:.1%}<extra></extra>"))
-    fig.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+    annotations = []
+    if wealth is not None:
+        annotations.append(dict(
+            text=f"<span style='font-size:11px;color:{GREY}'>Total invested</span><br><b>{chf(wealth)}</b>",
+            x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=NAVY),
+        ))
+    fig.update_layout(height=390, margin=dict(t=0, b=16, l=36, r=0), showlegend=False,
+                      annotations=annotations)
     return fig
+  
 
 
 # ----------------------------------------------------------------------------- tables
@@ -678,10 +688,11 @@ def tab_profile(profile: fire.ClientProfile, sim: fire.WealthSimulation, gb: Dic
     at_target = path.loc[path["age"] == profile.target_age].iloc[0]
 
     st.subheader("Client profile", anchor=False)
-    for title, text, _ in profile_rows(s, gb, float(path["s"].iloc[0])):
-        c1, c2 = st.columns([2, 6])
-        c1.markdown(f'<div class="fp-eyebrow" style="margin-top:0.2rem">{title}</div>', unsafe_allow_html=True)
-        c2.write(text)
+    with st.container(border=True):
+        for title, text, _ in profile_rows(s, gb, float(path["s"].iloc[0])):
+            c1, c2 = st.columns([1.8, 5.2])
+            c1.markdown(f'<div class="fp-eyebrow" style="margin-top:0.2rem">{title}</div>', unsafe_allow_html=True)
+            c2.write(text)
     st.caption("Currency hedging, investment rules and the other answers are fixed for this plan. To change "
                "them, use *Change my answers* and show the plan again. Your starting volatility is below the "
                "maximum risk setting when part of your wealth is already invested: the maximum applies only "
@@ -697,14 +708,14 @@ def tab_profile(profile: fire.ClientProfile, sim: fire.WealthSimulation, gb: Dic
               help="Half of the simulated paths end above this amount, half below.")
     st.divider()
 
+
     st.subheader("How your wealth could develop", anchor=False)
     ui.show(fan_chart(sim, K, profile.target_age))
     st.caption(f"Simulated wealth in today's CHF, with {N_SAMPLE_PATHS} of the {num(sim.n_paths)} simulated paths. "
-               f"A path reaches the goal if its wealth is at least the FIRE capital K at {profile.target_age}. "
+               f"A path reaches the goal if its wealth satisfies $W_T \\ge K$ at age {profile.target_age}. "
                f"Average of the simulated paths at {profile.target_age}: {chf(at_target['W'])}. After "
                f"{profile.target_age} the chart shows what happens if you keep saving the same amount, with the "
                f"{POST_FIRE} portfolio; spending your wealth in retirement is not simulated.")
-
 
 def tab_probability(profile: fire.ClientProfile, sim: fire.WealthSimulation, grid: fire.ResampledGrid,
                     summary: Dict) -> None:
@@ -729,7 +740,7 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
     W = fire.weights_table(path, tickers)
     x_today = W.iloc[0].values
     st.subheader("Your portfolio today", anchor=False)
-    c1, c2 = st.columns([3, 2], vertical_alignment="center")
+    c1, c2 = st.columns([1.4, 1], gap="large", vertical_alignment="top")
     with c1:
         ui.show_table(allocation_table(x_today, profile.wealth, tickers), {"Weight": PCT1, "Amount": chf})
         st.caption(f"Expected return {pct(path['m'].iloc[0], 2)} (real, {mu_label(model['mu_adj'])}) and "
@@ -737,7 +748,7 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
                    f"return is an average of past returns ({model['start']:%b %Y} - {model['end']:%b %Y}), "
                    f"not a forecast.")
     with c2:
-        ui.show(donut_chart(x_today, tickers))
+        ui.show(donut_chart(x_today, tickers, profile.wealth))
     st.divider()
 
     st.subheader("How the portfolio changes over time", anchor=False)
@@ -747,6 +758,20 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
                "As your wealth grows towards the FIRE capital it becomes more defensive. The actual portfolio "
                "adapts to your wealth each year; the chart shows the average over the simulated paths. "
                f"From age {profile.target_age} on you hold the {POST_FIRE} portfolio.")
+    with st.expander("Model & methodology"):
+        st.markdown(
+            "For each risk-aversion level $\\gamma$ on the resampled frontier ($B = 1{,}000$ bootstrap draws on "
+            "monthly real CHF returns), portfolio weights solve:"
+        )
+        st.latex(
+            r"\max_{w} \; w' \hat{\mu}_{\text{adj}} - \frac{\gamma}{2}\, w' \hat{\Sigma} w "
+            r"\quad \text{s.t.} \quad \mathbf{1}'w = 1, \; \ell \le w \le u"
+        )
+        st.markdown(
+            "As wealth $W_t$ progresses toward the FIRE target $K = C_{\\text{annual}} / \\text{SWR}$, "
+            "the glide path smoothly transitions risk exposure from $\\sigma_{\\max}$ toward $\\sigma_{\\min}$, "
+            "holding the minimum-risk portfolio from the target age onward."
+        )
     st.divider()
 
     if len(path) > 1:
@@ -837,8 +862,9 @@ def main() -> None:
         st.error("The market data is not usable: " + " ".join(problems))
         st.stop()
     if st.session_state["step"] < RESULTS:
-        questionnaire(rets)
-        return                    # not st.stop(): it would skip the clean-up that `field` relies on
+        with st.container(key="fp_quiz"):
+            questionnaire(rets)
+        return                    # not st.stop(): it would skip the clean-up that `field` relies on                   # not st.stop(): it would skip the clean-up that `field` relies on
 
     try:                          # the heavy step: once per submitted set of inputs (cached)
         with st.spinner("Computing your portfolios (1'000 resampled frontiers). This takes about two minutes "

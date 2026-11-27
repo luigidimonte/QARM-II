@@ -28,7 +28,10 @@ MISSED = "#A24735" # muted red for paths missing FIRE
 # header band: change the burgundy here, in one place
 ACCENT_BURGUNDY = "#7A1F2B" # header background; white text on it: 10.2:1 contrast (WCAG AA)
 HERO_TEXT = "#FFFFFF" # title and "+" box on the burgundy band
-HERO_LEAD = "#F3E6E8" # intro paragraph: 8.4:1 on the burgundy
+HERO_LEAD = "#F3E6E8"
+HERO_ACCENT_LINE = "#8BBCE0" # clear alpine sky blue accent # muted alpine/slate blue hairline separating header from page
+SLATE_BLUE = "#8BBCE0" # clear alpine sky blue for progress bar and interactive controls
+SWISS_RED = "#D52B1E" # official Swiss flag red # intro paragraph: 8.4:1 on the burgundy
 TABLE_ROW = "#FAFBFC" # table body rows (as before, with st.dataframe)
 TABLE_GRID = "#E2E4E7" # lines between table cells
 TABLE_BORDER = "#E2E4E7" # outer table border
@@ -37,14 +40,14 @@ BUTTON_RADIUS = "999px" # corner radius of every button: "999px" = pill, e.g. "1
 # one hue per asset
 
 ASSET_COLORS: Dict[str, str] = {
-    "SPY": "#111111",
-    "SMICHA.SW": "#7897C5",
-    "EEM": "#536F96",
-    "VNQ": "#8E9CAD",
-    "IEF": "#315C50",
-    "LQD": "#66847A",
-    "TIP": "#8D805E",
-    "GLD": "#A88A4B",
+    "SPY": "#1D3557",        # US equities: deep institutional navy
+    "SMICHA.SW": "#B82534",  # Swiss equities: Swiss crimson red
+    "EEM": "#2A7B88",        # Emerging markets: muted teal
+    "VNQ": "#C46D4E",        # US real estate: refined terracotta
+    "IEF": "#2D6A4F",        # Sovereign bonds: forest green
+    "LQD": "#6FA8DC",        # Corporate bonds: alpine blue
+    "TIP": "#7A6382",        # Inflation-linked bonds: muted plum
+    "GLD": "#D9A726",        # Gold: luminous refined gold
 }
 OUTLINE = dict(color="#FFFFFF", width=1)
 # Computer Modern (LaTeX look) for the whole app, in one place. Web font: Computer Modern Unicode
@@ -52,9 +55,10 @@ OUTLINE = dict(color="#FFFFFF", width=1)
 # Only regular, bold, italic and bold italic exist: weights up to 500 render as 400, 600+ as bold.
 # .streamlit/config.toml repeats this stack for st.dataframe, which draws on a canvas (CSS cannot reach
 # it); tests/test_ui_style.py checks that the two stay the same.
-FONT_URL = ("https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@"
-            "e9977be1283466992a2dede47a342655d8426fee/font/Serif/cmun-serif.css")
-FONT_STACK = "'Computer Modern Serif', 'Latin Modern Roman', 'STIX Two Text', Georgia, serif"
+FONT_URL = ("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700"
+            "&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap")
+FONT_STACK = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+FONT_SERIF = "'Source Serif 4', Georgia, 'Times New Roman', serif"
 # ----------------------------------------------------------------------------- Plotly template
 
 pio.templates["fire"] = go.layout.Template(layout=go.Layout(
@@ -104,6 +108,7 @@ def show_table(df: pd.DataFrame, formats: Optional[Dict[str, Callable]] = None,
 
 CSS = f"""
 <style>
+@import url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/font/Serif/cmun-serif.css');
 @import url('{FONT_URL}');
 :root {{
 --ink: {NAVY};
@@ -139,7 +144,7 @@ header[data-testid="stHeader"] svg {{ color: {HERO_TEXT} !important; fill: {HERO
 header[data-testid="stHeader"] button:hover {{ background: rgba(255,255,255,0.12) !important; }}
 /* Layout: wide, editorial, with generous white space */
 [data-testid="stMainBlockContainer"], .block-container {{
-max-width: 1320px;
+max-width: 1080px;
 padding: 0 2.5rem 5rem 2.5rem;
 }}
 @media (max-width: 720px) {{
@@ -154,7 +159,7 @@ left: 50%;
 right: 50%;
 margin-left: -50vw;
 margin-right: -50vw;
-padding: 6.25rem max(2.5rem, calc((100vw - 1320px) / 2 + 2.5rem)) 2.4rem;
+padding: 3.6rem max(2.5rem, calc((100vw - 1080px) / 2 + 2.5rem)) 1.4rem;
 gap: 0 !important;
 margin-top: -1rem;
 margin-bottom: 1.6rem;
@@ -167,8 +172,8 @@ position: absolute;
 left: 0;
 right: 0;
 bottom: 0;
-height: 1px;
-background: rgba(255,255,255,0.18);
+height: 4px;
+background: {HERO_ACCENT_LINE};
 transform-origin: left center;
 animation: fpLineIn 700ms var(--ease) both;
 }}
@@ -178,7 +183,7 @@ animation: fpLineIn 700ms var(--ease) both;
 /* the rotating-text iframe sizes itself to its tallest slide: let its wrapper follow */
 .st-key-fp_hero [data-testid="stElementContainer"]:has(iframe) {{ height: auto !important; flex: 0 0 auto !important; }}
 @media (max-width: 720px) {{
-.st-key-fp_hero {{ padding: 5rem 1rem 1.8rem 1rem; }}
+.st-key-fp_hero {{ padding: 3.2rem 1rem 1.2rem 1rem; }}
 }}
 .fp-hero-title-row {{
 display: flex;
@@ -186,57 +191,64 @@ flex-wrap: wrap;
 align-items: center;
 justify-content: center;
 text-align: center;
-gap: 0.95rem;
-margin-bottom: 1.2rem;
+gap: 0.9rem;
+margin-bottom: 1.15rem;
 }}
 .fp-hero-swiss-cross {{
 display: inline-flex;
 align-items: center;
 justify-content: center;
 flex-shrink: 0;
-width: 30px;
-height: 30px;
-color: {HERO_TEXT};
-background: transparent;
-border: 1px solid {HERO_TEXT};
-font-weight: 500;
-font-size: 0.95rem;
-line-height: 1;
+width: clamp(32px, 3.2vw, 44px);
+height: clamp(32px, 3.2vw, 44px);
+border: 1.5px solid {HERO_TEXT};
+box-sizing: border-box;
+line-height: 0;
+}}
+.fp-hero-swiss-cross svg {{
+width: 100%;
+height: 100%;
+display: block;
 }}
 .st-key-fp_hero .fp-hero-title {{
-font-family: {FONT_STACK} !important;
-font-size: clamp(2.7rem, 4.8vw, 4.6rem) !important;
+font-family: 'Times New Roman', Times, Georgia, serif !important;
+font-size: clamp(2.7rem, 4.6vw, 4.3rem) !important;
 font-weight: 400 !important;
 color: {HERO_TEXT} !important;
 margin: 0 !important;
-letter-spacing: -0.02em;
+letter-spacing: -0.015em;
 overflow-wrap: anywhere;
 line-height: 1.02;
 }}
+.st-key-fp_quiz {{
+width: 100%;
+max-width: 820px;
+margin: 0 auto;
+}}
 /* Typography */
 h1, h2, h3, h1 *, h2 *, h3 * {{ color: var(--ink) !important; }}
-h1, h2 {{ font-family: {FONT_STACK} !important; }}
+h1, h2 {{ font-family: {FONT_SERIF} !important; }}
 h2 {{
 font-size: 2rem !important;
-font-weight: 400 !important;
-letter-spacing: -0.035em;
+font-weight: 600 !important;
+letter-spacing: -0.02em;
 line-height: 1.2 !important;
 }}
 h3 {{
-font-family: {FONT_STACK} !important;
-font-size: 1.12rem !important;
+font-family: {FONT_SERIF} !important;
+font-size: 1.45rem !important;
 font-weight: 600 !important;
-letter-spacing: -0.015em;
+letter-spacing: -0.01em;
 padding-top: 0.2rem !important;
 }}
-p, li {{ font-size: 1.06rem; line-height: 1.62; color: #1F1F1F; }}
-[data-testid="stCaptionContainer"], .stCaption {{ color: #5F6368 !important; font-size: 0.93rem; }}
-[data-testid="stCaptionContainer"] p {{ font-size: 0.93rem; color: #5F6368 !important; }}
+p, li {{ font-size: 1.02rem; line-height: 1.6; color: #1F1F1F; }}
+[data-testid="stCaptionContainer"], .stCaption {{ color: #52565C !important; font-size: 0.9rem; }}
+[data-testid="stCaptionContainer"] p {{ font-size: 0.9rem !important; color: #52565C !important; }}
 .fp-eyebrow {{
 display: inline-block;
 font-size: 0.8rem;
 font-weight: 600;
-letter-spacing: 0.12em;
+letter-spacing: 0.1em;
 text-transform: uppercase;
 color: var(--muted);
 margin-bottom: 0.45rem;
@@ -266,7 +278,7 @@ overflow: hidden;
 background: #FFFFFF;
 border: 1px solid var(--line);
 border-radius: var(--radius);
-padding: 1rem 1.15rem;
+padding: 0.9rem 0.95rem;
 box-shadow: none;
 transition: transform 180ms var(--ease), box-shadow 220ms var(--ease), border-color 180ms ease;
 }}
@@ -276,8 +288,8 @@ position: absolute;
 top: 0;
 left: 0;
 width: 100%;
-height: 2px;
-background: var(--ink);
+height: 3px;
+background: {SLATE_BLUE} !important;
 transform: scaleX(0);
 transform-origin: left;
 transition: transform 240ms var(--ease);
@@ -285,54 +297,71 @@ transition: transform 240ms var(--ease);
 [data-testid="stMetric"]:hover {{
 transform: translateY(-2px);
 box-shadow: 0 9px 22px rgba(17,17,17,0.065);
-border-color: #BFC2C7;
+border-color: {SLATE_BLUE};
 }}
 [data-testid="stMetric"]:hover::before {{ transform: scaleX(1); }}
 [data-testid="stMetricLabel"] p {{
-font-size: 0.88rem !important;
+font-size: 0.9rem !important;
 font-weight: 500;
 letter-spacing: 0.01em;
 color: var(--muted) !important;
 }}
 [data-testid="stMetricValue"] {{
 color: var(--ink) !important;
-font-family: {FONT_STACK} !important;
-font-weight: 400;
-font-size: 1.7rem !important;
+font-family: {FONT_SERIF} !important;
+font-weight: 600;
+font-size: clamp(1.2rem, 1.5vw, 1.48rem) !important;
 font-variant-numeric: lining-nums tabular-nums;
 }}
 /* Progress */
-[data-testid="stProgress"] > div {{ background: #ECEEF2 !important; border-radius: 0 !important; }}
-[data-testid="stProgress"] > div > div > div > div {{
-background: var(--accent) !important;
+[data-testid="stProgress"] [data-testid="stMarkdownContainer"] p {{
+font-size: 0.96rem !important;
+color: var(--ink) !important;
+}}
+[data-testid="stProgress"] [role="progressbar"]:has(> div:empty),
+[data-testid="stProgress"] [role="progressbar"] div:has(> div:empty) {{
+background: #ECEEF2 !important;
+border-radius: 0 !important;
+}}
+[data-testid="stProgress"] [role="progressbar"] div:empty {{
+background: {SLATE_BLUE} !important;
 border-radius: 0 !important;
 transition: width 500ms var(--ease);
 }}
 /* Buttons: restrained black/white system with subtle motion */
 .stButton > button, [data-testid^="stBaseButton"] {{
 border-radius: 0 !important;
-min-height: 2.65rem;
-padding-left: 1rem !important;
-padding-right: 1rem !important;
+min-height: 2.75rem;
+padding-left: 1.1rem !important;
+padding-right: 1.1rem !important;
 font-weight: 500;
-font-size: 1rem;
+font-size: 1.08rem;
 letter-spacing: 0;
 transition: transform 150ms var(--ease), box-shadow 200ms var(--ease), background-color 180ms ease,
 color 180ms ease, border-color 180ms ease;
+}}
+.stButton > button p, [data-testid^="stBaseButton"] p {{
+font-size: 0.98rem !important;
 }}
 .stButton > button:hover, [data-testid^="stBaseButton"]:hover {{
 transform: translateY(-1px);
 }}
 [data-testid="stBaseButton-primary"] {{
-background: var(--ink) !important;
-border: 1px solid var(--ink) !important;
-color: #FFFFFF !important;
+background: #FFFFFF !important;
+border: 1.5px solid {ACCENT_BURGUNDY} !important;
+color: var(--ink) !important;
+font-weight: 600 !important;
 }}
-[data-testid="stBaseButton-primary"] p {{ color: #FFFFFF !important; }} /* label is a <p>: beat the global p colour */
+[data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-primary"] div,
+[data-testid="stBaseButton-primary"] span {{
+color: var(--ink) !important;
+font-weight: 600 !important;
+}}
 [data-testid="stBaseButton-primary"]:hover {{
-background: #2A2A2A !important;
-border-color: #2A2A2A !important;
-box-shadow: 0 8px 18px rgba(17,17,17,0.13);
+background: rgba(122, 31, 43, 0.06) !important;
+border-color: {ACCENT_BURGUNDY} !important;
+box-shadow: 0 6px 16px rgba(122, 31, 43, 0.08);
 }}
 [data-testid="stBaseButton-secondary"] {{
 background: transparent !important;
@@ -349,36 +378,43 @@ button[data-testid="stBaseButton-tertiary"],
 button[data-testid^="stBaseButton-pills"],
 button[data-testid^="stBaseButton-segmented_control"] {{ border-radius: {BUTTON_RADIUS} !important; }}
 [data-testid="stBaseButton-secondary"]:hover {{
-border-color: var(--ink) !important;
+border-color: {SLATE_BLUE} !important;
 background: #FFFFFF !important;
 box-shadow: 0 6px 16px rgba(17,17,17,0.055);
 }}
 /* Inputs */
+[data-testid="stWidgetLabel"] p {{
+font-size: 0.98rem !important;
+color: var(--ink) !important;
+}}
 [data-baseweb="input"], [data-baseweb="select"] > div {{
 border-radius: 0 !important;
 background: #FFFFFF !important;
 }}
+[data-baseweb="input"] input, [data-baseweb="select"] {{
+font-size: 0.98rem !important;
+}}
 [data-baseweb="input"]:focus-within,
 [data-baseweb="select"] > div:focus-within {{
-box-shadow: 0 0 0 1px var(--ink) !important;
+box-shadow: 0 0 0 1.5px {SLATE_BLUE} !important;
 }}
 input, textarea {{ caret-color: var(--accent); }}
 /* Sliders / radio / checkbox accents */
-.stSlider [data-baseweb="slider"] [role="slider"] {{
-background: var(--ink) !important;
-border: 2px solid #FFFFFF;
-box-shadow: 0 0 0 1px var(--ink) !important;
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"] {{
+background: {SLATE_BLUE} !important;
+border: 2px solid #FFFFFF !important;
+box-shadow: 0 0 0 1px {SLATE_BLUE} !important;
 transition: transform 120ms ease;
 }}
-.stSlider [data-baseweb="slider"] [role="slider"]:hover {{ transform: scale(1.08); }}
-.stSlider [data-baseweb="slider"] > div > div > div {{ background: var(--accent) !important; }}
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"]:hover {{ transform: scale(1.08); }}
+.stSlider [data-baseweb="slider"] > div > div > div {{ background: {SLATE_BLUE} !important; }}
 /* Tabs */
 [data-testid="stTabs"] [role="tablist"] {{
 border-bottom: 1px solid var(--line);
 gap: 1.6rem;
 }}
 [data-testid="stTabs"] [role="tab"] p {{
-font-size: 1.02rem;
+font-size: 1rem;
 font-weight: 500;
 color: var(--muted);
 transition: color 160ms ease;
@@ -406,12 +442,12 @@ color: #000000 !important;
 border: none !important;
 border-right: 1px solid {TABLE_GRID} !important;
 border-bottom: 1px solid {TABLE_GRID} !important;
-padding: 0.62rem 0.75rem;
-font-size: 0.97rem;
+padding: 0.7rem 0.85rem;
+font-size: 0.95rem;
 }}
 [data-testid="stTable"] tr > :last-child {{ border-right: none !important; }}
 [data-testid="stTable"] tbody tr:last-child > * {{ border-bottom: none !important; }}
-[data-testid="stTable"] p {{ color: inherit !important; }}   /* cell text is a <p>: beat the global p colour */
+[data-testid="stTable"] p {{ color: inherit !important; font-size: inherit !important; }}
 [data-testid="stTable"] thead th {{
 background: {ACCENT_BURGUNDY} !important;
 color: {HERO_TEXT} !important;
@@ -421,7 +457,7 @@ border-bottom: none !important;
 }}
 [data-testid="stTable"] td {{
 font-family: {FONT_STACK};
-font-size: 0.97rem;
+font-size: 1.08rem;
 font-variant-numeric: lining-nums tabular-nums;
 }}
 [data-testid="stTable"] th {{ font-weight: 500; }}
@@ -445,7 +481,7 @@ transition: border-color 160ms ease, box-shadow 200ms ease;
 border-color: #BFC2C7 !important;
 box-shadow: 0 6px 16px rgba(17,17,17,0.04);
 }}
-[data-testid="stExpander"] summary p {{ font-size: 1.02rem; font-weight: 500; color: var(--ink); }}
+[data-testid="stExpander"] summary p {{ font-size: 1rem; font-weight: 500; color: var(--ink); }}
 /* Alerts */
 [data-testid="stAlert"] {{ border-radius: 0 !important; }}
 /* Accessibility */
@@ -484,23 +520,24 @@ FIRE_FACTS = [
      "text": "FIRE followers often aim to save 50–70% of their income. Spending less both raises what you "
              "save and lowers the capital you need."},
 ]
-ROTATE_SECONDS = 30
+ROTATE_SECONDS = 20
 
 # Client-side carousel in its own iframe (st.components.v1.html), so it keeps rotating while Python
 # computes. The slides are stacked in one grid cell: the widget is as tall as its longest slide at the
 # current width and never changes height between slides; the (same-origin) iframe sets its own height.
-_ROTATOR = """<!doctype html><html><head><meta charset="utf-8"><style>
-@import url('__FONT_URL__');
+_ROTATOR = """<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/font/Serif/cmun-serif.css">
+<style>
 html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
-body { font-family: __FONT__; color: __LEAD__; -webkit-font-smoothing: antialiased; }
+body { font-family: 'Computer Modern Serif', Georgia, serif; color: __LEAD__; -webkit-font-smoothing: antialiased; }
 .rot { max-width: 60rem; margin: 0 auto; text-align: center; }
 .slides { display: grid; }
-.slide { grid-area: 1 / 1; margin: 0; font-size: 1.08rem; line-height: 1.68; opacity: 0; visibility: hidden;
+.slide { grid-area: 1 / 1; margin: 0; font-size: 1.05rem; line-height: 1.62; opacity: 0; visibility: hidden;
          transition: opacity 400ms ease, visibility 0s linear 400ms; }
 .slide.on { opacity: 1; visibility: visible; transition: opacity 400ms ease, visibility 0s; }
 .slide strong, .title { color: __TEXT__; font-weight: 700; }
 .slide em { font-style: italic; }
-.title { display: block; margin-bottom: 0.15rem; }
+.title { display: block; margin-bottom: 0.4rem; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.88; }
 .nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.1rem; margin-top: 0.75rem; }
 button { font: inherit; color: __TEXT__; background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
          opacity: 0.7; transition: opacity 150ms ease; }
@@ -525,13 +562,11 @@ button:focus-visible { outline: 1px solid __TEXT__; outline-offset: 2px; }
   var n = slides.length, DELAY = __DELAY__, TICK = 250, K_IDX = "fp_header_slide", K_LAST = "fp_header_last";
   function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
   function save(k, v) { try { sessionStorage.setItem(k, String(v)); } catch (e) {} }
-  // Slide index and the time of the last slide change survive a remount of the iframe, so a
-  // remount neither resets the slide nor restarts the countdown.
   var i = parseInt(load(K_IDX), 10), last = parseInt(load(K_LAST), 10), now = Date.now();
   if (!(i >= 0 && i < n)) i = 0;
-  if (!(last <= now && now - last < 2 * DELAY)) last = now;          // new or stale session
-  var hoverUntil = 0;     // no auto-advance before this time; a resting mouse pauses at most DELAY
-  function restart() { last = Date.now(); save(K_LAST, last); }      // fresh countdown
+  if (!(last <= now && now - last < 2 * DELAY)) last = now;
+  var hoverUntil = 0;
+  function restart() { last = Date.now(); save(K_LAST, last); }
   function show(k) {
     i = (k + n) % n;
     for (var j = 0; j < n; j++) {
@@ -541,8 +576,8 @@ button:focus-visible { outline: 1px solid __TEXT__; outline-offset: 2px; }
     save(K_IDX, i);
   }
   function go(k) { show(k); restart(); }
-  function tick() {                      // setTimeout chain: compares elapsed time, so throttled or late
-    var t = Date.now();                  // timers just catch up (one step) instead of drifting
+  function tick() {
+    var t = Date.now();
     if (t >= hoverUntil && t - last >= DELAY) go(i + 1);
     setTimeout(tick, TICK);
   }
@@ -555,10 +590,10 @@ button:focus-visible { outline: 1px solid __TEXT__; outline-offset: 2px; }
   rot.addEventListener("pointerenter", hovering);
   rot.addEventListener("pointermove", hovering);
   rot.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") leave(); });
-  document.documentElement.addEventListener("mouseleave", leave);     // left the iframe
+  document.documentElement.addEventListener("mouseleave", leave);
   window.addEventListener("blur", leave);
   document.addEventListener("visibilitychange", function () { if (document.hidden) leave(); });
-  function fit() {                       // iframe height = tallest slide + controls
+  function fit() {
     try {
       var f = window.frameElement, h = Math.ceil(rot.getBoundingClientRect().height) + 2;
       if (f && Math.abs(f.getBoundingClientRect().height - h) > 1) f.style.height = h + "px";
@@ -591,12 +626,20 @@ def rotator_html(lead: str) -> str:
 
 def header(title: str, lead: str) -> None:
     """Burgundy header: title, then the rotating intro paragraph / FIRE facts."""
+    swiss_flag_svg = (
+        f'<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Switzerland">'
+        f'<rect width="32" height="32" fill="{SWISS_RED}"/>'
+        f'<rect x="13" y="6" width="6" height="20" fill="{HERO_TEXT}"/>'
+        f'<rect x="6" y="13" width="20" height="6" fill="{HERO_TEXT}"/>'
+        f'</svg>'
+    )
     with st.container(key="fp_hero"):
         st.markdown(
             f'<div class="fp-hero-title-row">'
-            f'<div class="fp-hero-swiss-cross">✚</div>'
+            f'<div class="fp-hero-swiss-cross">{swiss_flag_svg}</div>'
             f'<div class="fp-hero-title">{title}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        components.html(rotator_html(lead), height=230)
+        components.html(rotator_html(lead), height=160)
