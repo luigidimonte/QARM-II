@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -18,6 +19,8 @@ import market as mk  # noqa: E402
 import optimizer as opt  # noqa: E402
 
 PREFS, ASSUMPTIONS, SUMMARY, RESULTS = 4, 5, 6, 7          # questionnaire steps of app_fire.py
+with open(os.path.join(ROOT, "app_fire.py"), encoding="utf8") as _f:   # app_fire runs the app on import
+    N_SAMPLE_PATHS = int(re.search(r"^N_SAMPLE_PATHS = (\d+)", _f.read(), re.M).group(1))
 
 
 def fake_prices(tickers, start=None):
@@ -61,11 +64,16 @@ def test_results_show_probability_fan_chart_and_standard_error(app):
     assert metrics["Chance of FIRE by 55"].endswith("%")
     captions = " ".join(c.value for c in app.caption)
     assert "Monte Carlo standard error" in captions and "10'000 simulated paths, seed 42" in captions
-    assert "5th to 95th percentile" in charts(app) and "FIRE capital reached" in charts(app)
+    assert "10th to 90th percentile" in charts(app) and "FIRE capital reached" in charts(app)
+    lasts = metrics["Chance your money lasts until 95"]
+    assert lasts.endswith("%") and 0 <= float(lasts.rstrip("%")) <= 100
+    assert what_if_table(app).loc["Chance your money lasts until 95", "Current plan"] == lasts
     app.slider(key="wi_rate").set_value(60).run()                    # What if reacts
     assert not app.exception
     chance = what_if_table(app).loc["Chance by target age"]
     assert chance["Alternative"] != chance["Current plan"]
+    lasts = what_if_table(app).loc["Chance your money lasts until 95"]
+    assert float(lasts["Alternative"].rstrip("%")) > float(lasts["Current plan"].rstrip("%"))  # spends less
 
 
 def traces(at):
@@ -78,7 +86,7 @@ def test_sample_paths_and_histogram(app):
     names = [t.get("name") or "" for t in traces(app)]
     keys = [n for n in names if n.startswith("Sample paths that") and n.endswith(")")]
     assert len(keys) == 2
-    assert sum(int(n.split("(")[1].rstrip(")")) for n in keys) == 100          # every path is in one group
+    assert sum(int(n.split("(")[1].rstrip(")")) for n in keys) == N_SAMPLE_PATHS   # every path is in one group
     chance = {m.label: m.value for m in app.metric}["Chance of FIRE by 55"]
     assert f"FIRE capital reached ({chance})" in names                         # same share as the probability
     spec = charts(app)

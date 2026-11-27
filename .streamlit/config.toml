@@ -1,3 +1,7 @@
+[client]
+# no Deploy button or developer options for end users (see also the CSS in ui_style.py)
+toolbarMode = "minimal"
+
 [theme]
 base = "light"
 primaryColor = "#8BBCE0"

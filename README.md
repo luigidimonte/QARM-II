@@ -79,11 +79,12 @@ H_t = c (1 − (1 + r_f)^(−h_t)) / r_f
 ### Monte Carlo simulation of wealth (project assumption, not from the course)
 
 ```
-W_{t+1} = W_t (1 + x_t'R_t) + c,    x_t = x(γ_t(W_t, h_t))
+W_{t+1} = W_t (1 + x_t'R_t) + c,    x_t = x(γ_t(W_t, h_t))       before the target age
+W_{t+1} = (W_t − e)(1 + x_t'R_t),    x_t = x(γ_min)                from the target age (0 once W_t ≤ e)
 p̂ = (1/N) Σ_k 1{W_T^(k) ≥ K},       SE = sqrt(p̂ (1 − p̂) / N)
 ```
 
-- N = 10'000 paths, yearly steps until max(target age + 15, 65), at most 100. γ_t is computed on each path from that path's own wealth; the portfolio is rebalanced to its target every year and the savings c enter at the end of the year.
+- N = 10'000 paths, yearly steps until age 95. γ_t is computed on each path from that path's own wealth; the portfolio is rebalanced to its target every year and the savings c enter at the end of the year. From the target age the yearly expenses e are withdrawn at the start of each year.
 - Yearly gross asset returns are jointly lognormal, with mean and covariance matched exactly to the point estimates μ and Σ of the real CHF returns (not the resampled ones), independent across years. The moments are treated as known: parameter uncertainty enters only through the resampled weights.
 - T is the target age: the probability is the share of paths with wealth of at least K at that age, not of having crossed K before. The standard error measures simulation noise only, not model or estimation error.
 - The same seed (Advanced settings, default 42) gives the same simulated markets. The current plan and the *What if* alternative share them (common random numbers), so their difference is not blurred by simulation noise.
@@ -107,7 +108,7 @@ p̂ = (1/N) Σ_k 1{W_T^(k) ≥ K},       SE = sqrt(p̂ (1 − p̂) / N)
 | Dynamic γ_t | Human capital rule computed on each path from its own wealth | Project layer |
 | Monte Carlo on wealth | Lognormal yearly returns, point estimates treated as known | Project layer |
 | Cash flows | Savings, K and spending constant in today's CHF; savings at the end of the year | Project layer |
-| After FIRE | γ = γ_min; withdrawals are not simulated (later points assume that savings continue) | Project layer |
+| After FIRE | γ = γ_min; the expenses are withdrawn at the start of each year until 95; a path with W_t ≤ e runs out of money (wealth 0) | Project layer |
 | Swiss equities | SMICHA.SW, SMI total-return index before 2013 | Project layer |
 | Costs | No transaction costs and no taxes | Project layer |
 

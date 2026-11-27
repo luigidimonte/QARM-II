@@ -10,6 +10,10 @@ sys.path.insert(0, ROOT)
 
 import ui_style as ui  # noqa: E402
 
+CM_FAMILY = "'Computer Modern Serif'"                                    # header (rotator) and theme font
+CM_REPO = "https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@"
+CM_CSS = "/font/Serif/cmun-serif.css"
+
 
 def test_fire_facts_have_title_and_text():
     assert [f["title"] for f in ui.FIRE_FACTS] == ["Where it started", "A blog boom", "Many flavours",
@@ -26,15 +30,20 @@ def test_rotator_contains_the_lead_and_every_fact():
     assert "<strong>FIRE</strong> intro" in page
     for fact in ui.FIRE_FACTS:
         assert html.escape(fact["title"]) in page and html.escape(fact["text"]) in page
-    assert ui.FONT_URL in page and ui.FONT_STACK in page and "__" not in page.replace("__init__", "")
+    # the header is set in Computer Modern (its own stylesheet link), not in the body font FONT_STACK
+    assert CM_FAMILY in page and CM_CSS in page and "__" not in page.replace("__init__", "")
 
 
 def test_theme_font_matches_font_stack():
-    """.streamlit/config.toml (used by st.dataframe) must use the same fonts as ui_style.FONT_STACK."""
+    """.streamlit/config.toml (theme font, used where the CSS does not reach, e.g. st.dataframe) loads
+    Computer Modern from the same jsDelivr stylesheet as the header and the CSS, and the body font
+    FONT_STACK / FONT_URL that the CSS loads are both defined."""
     with open(os.path.join(ROOT, ".streamlit", "config.toml"), encoding="utf8") as f:
         line = next(x for x in f if x.startswith("font = "))
     families = [x.strip() for x in line.split("=", 1)[1].strip().strip('"').split(",")]
     first, url = families[0].split(":", 1)
-    assert url == ui.FONT_URL
-    stack = [x.strip().strip("'\"") for x in ui.FONT_STACK.split(",")]
-    assert [first] + families[1:] == stack
+    assert first == CM_FAMILY.strip("'")
+    assert url.startswith(CM_REPO) and url.endswith(CM_CSS)
+    assert families[-1] == "serif"
+    assert f"@import url('{ui.FONT_URL}')" in ui.CSS and f"font-family: {ui.FONT_STACK}" in ui.CSS
+    assert CM_REPO in ui.CSS and CM_CSS in ui.CSS

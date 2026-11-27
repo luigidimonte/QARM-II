@@ -5,6 +5,7 @@ import os
 import sys
 
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -154,14 +155,17 @@ def test_zero_volatility_is_the_hand_computed_recursion(setup):
     grid0 = fire.ResampledGrid(tuple(TICKERS), gammas, W, mu, np.zeros((6, 6)), gb["gamma_0"], gb["gamma_min"])
     curve = ((1.0, 0.005), (5.0, 0.02), (20.0, 0.03))          # r_f depends on the remaining horizon
     sim = fire.simulate_wealth(PROFILE, grid0, RiskFree(curve, 0.01), 3, 0)
-    w, expected, c, K = 100_000.0, [], 60_000.0, 1_500_000.0
+    w, expected, c, e, K = 100_000.0, [], 60_000.0, 60_000.0, 1_500_000.0
     for age in range(30, fire.horizon_end_age(PROFILE) + 1):
         expected.append(w)
         h = max(50 - age, 0)
         r = (1 + nominal_rate(h, curve)) / 1.01 - 1 if h > 0 else 0.0
         g = scalar_gamma(w, scalar_pv(c, h, r), K, gb["gamma_0"], gb["gamma_min"])
         x = np.array([np.interp(g, gammas, W[:, i]) for i in range(6)])
-        w = w * (1 + x @ mu) + c                       # returns first, then savings
+        if age < 50:
+            w = w * (1 + x @ mu) + c                   # returns first, then savings
+        else:
+            w = max(w - e, 0.0) * (1 + x @ mu)         # spending first, then returns
     np.testing.assert_allclose(sim.wealth, np.tile(expected, (3, 1)), rtol=1e-10)
     assert set(sim.path["P"]) <= {0.0, 1.0} and (sim.path["SE"] == 0).all()
 
@@ -208,12 +212,14 @@ def test_common_random_numbers_across_horizons(setup):
     g = constant_grid(setup[0], setup[1])
     a = fire.simulate_wealth(PROFILE, g, RF, 50, 7).wealth
     b = fire.simulate_wealth(PROFILE.with_changes(target_age=55), g, RF, 50, 7).wealth
-    np.testing.assert_allclose(a, b[:, :a.shape[1]], rtol=1e-12)
+    upto = PROFILE.target_age - PROFILE.age + 1                       # ages 30..50: both still saving
+    np.testing.assert_allclose(a[:, :upto], b[:, :upto], rtol=1e-12)
 
 
 def test_simulated_paths_rebuilt_by_hand_path_by_path(grid):
-    """Scalar loop over a few paths: gamma_t uses that path's own W_t, returns first, then savings."""
-    n, seed, c, K = 5, 21, 60_000.0, 1_500_000.0
+    """Scalar loop over a few paths: gamma_t uses that path's own W_t, returns first, then savings;
+    from the target age on, spending first (0 once ruined), then returns."""
+    n, seed, c, e, K = 5, 21, 60_000.0, 60_000.0, 1_500_000.0
     sim = fire.simulate_wealth(PROFILE, grid, RF, n, seed)
     m, A = fire.lognormal_parameters(grid.mu, grid.sigma)
     rng, w = np.random.default_rng(seed), np.full(n, 100_000.0)
@@ -225,8 +231,10 @@ def test_simulated_paths_rebuilt_by_hand_path_by_path(grid):
         for k in range(n):
             g = scalar_gamma(w[k], H, K, grid.gamma_0, grid.gamma_min)
             x = np.array([np.interp(g, grid.gammas, grid.weights[:, i]) for i in range(6)])
-            new.append(w[k] * (x @ np.exp(m + A @ z[k])) + c)
+            gross = x @ np.exp(m + A @ z[k])
+            new.append(w[k] * gross + c if h > 0 else max(w[k] - e, 0.0) * gross)
         w = np.array(new)
+    np.testing.assert_allclose(sim.wealth[:, -1], w, rtol=1e-9)
 
 
 def test_gamma_follows_each_path(grid):
@@ -240,13 +248,20 @@ def test_gamma_follows_each_path(grid):
 
 def test_glide_path_feasible_and_consistent(setup, grid):
     gb = setup[5]
-    path = fire.simulate_wealth(PROFILE, grid, RF, N, 7).path
-    assert path["age"].iloc[0] == PROFILE.age and path["age"].iloc[-1] == fire.horizon_end_age(PROFILE)
+    sim = fire.simulate_wealth(PROFILE, grid, RF, N, 7)
+    path = sim.path
+    assert path["age"].iloc[0] == PROFILE.age and path["age"].iloc[-1] == fire.HORIZON_AGE
     assert_feasible(fire.weights_table(path, TICKERS).values)            # average portfolios
     assert ((path["gamma"] >= gb["gamma_min"] - 1e-12) & (path["gamma"] <= gb["gamma_0"] + 1e-12)).all()
     np.testing.assert_allclose(path.loc[path["age"] >= PROFILE.target_age, "gamma"], gb["gamma_min"])
-    trades = fire.weights_table(path, TICKERS, "trade_amt_").iloc[1:]
-    np.testing.assert_allclose(trades.sum(axis=1), PROFILE.savings, rtol=1e-9)  # trades invest c
+    trades = fire.weights_table(path, TICKERS, "trade_amt_").iloc[1:].sum(axis=1)
+    T, c, e = PROFILE.target_age, PROFILE.savings, PROFILE.expenses
+    np.testing.assert_allclose(trades[trades.index < T], c, rtol=1e-9)       # trades invest c
+    sold = {a: np.mean(np.maximum(sim.wealth_at(a) - e, 0.0) - sim.wealth_at(a))   # -e, or all that
+            for a in trades.index[trades.index >= T]}                            # is left when ruined
+    np.testing.assert_allclose(trades[T], c + sold[T], rtol=1e-9, atol=1e-6)  # last savings in, e out
+    after = [a for a in sold if a > T]
+    np.testing.assert_allclose(trades[after], [sold[a] for a in after], rtol=1e-9)
 
 
 def test_default_risk_range_gives_a_moving_glide_path(setup):
@@ -294,3 +309,120 @@ def test_validate_profile():
     _, warnings = fire.validate_profile(PROFILE.with_changes(income=50_000))
     assert warnings
     assert fire.validate_profile(PROFILE) == ([], [])
+
+
+# --------------------------------------------------------------- decumulation after the target age
+def _simulate_wealth_before_decumulation(p, grid, rf, n_paths, seed):
+    """fire.simulate_wealth as it was before spending after FIRE was modelled (savings went on and
+    the horizon was max(target + 15, 65)), copied verbatim: the reference for the test below."""
+    K, c = fire.fire_target(p.expenses, p.swr), p.savings
+    ages = np.arange(p.age, int(min(max(p.target_age + 15, 65), 100)) + 1)
+    n = len(grid.tickers)
+    m_log, A = fire.lognormal_parameters(grid.mu, grid.sigma)
+    rng = np.random.default_rng(seed)
+    wealth = np.empty((n_paths, len(ages)))
+    wealth[:, 0] = p.wealth
+    before = np.zeros((n_paths, n))
+    rows = []
+    for t, age in enumerate(ages):
+        W = wealth[:, t]
+        h = max(p.target_age - int(age), 0)
+        r, H, g, x = fire.target_portfolio(W, h, p, grid, rf)
+        m = x @ grid.mu
+        s = np.sqrt(np.maximum(np.einsum("ki,ij,kj->k", x, grid.sigma, x), 0.0))
+        invested = before.sum(axis=1, keepdims=True)
+        drift = np.where(invested > 0, before / np.where(invested > 0, invested, 1.0), 0.0)
+        trade = x * W[:, None] - before
+        P = float(np.mean(W >= K))
+        row = {"age": int(age), "years": t, "W": W.mean(), "h": h, "rf": r, "H": H, "gamma": g.mean(),
+               "m": m.mean(), "s": s.mean(),
+               "K": K, "P": P, "SE": np.sqrt(P * (1.0 - P) / n_paths)}
+        row.update({f"q{q}": v for q, v in zip((5, 25, 50, 75, 95), np.percentile(W, (5, 25, 50, 75, 95)))})
+        for i, tick in enumerate(grid.tickers):
+            row[f"w_{tick}"] = x[:, i].mean()
+            row[f"drift_{tick}"] = drift[:, i].mean()
+            row[f"trade_pct_{tick}"] = x[:, i].mean() - drift[:, i].mean()
+            row[f"trade_amt_{tick}"] = trade[:, i].mean()
+        rows.append(row)
+        if t + 1 < len(ages):
+            R = np.exp(m_log + rng.standard_normal((n_paths, n)) @ A.T) - 1.0
+            before = W[:, None] * x * (1.0 + R)
+            wealth[:, t + 1] = before.sum(axis=1) + c
+    return pd.DataFrame(rows), wealth
+
+
+@pytest.mark.parametrize("profile", [PROFILE, PROFILE.with_changes(age=45, wealth=900_000, target_age=48),
+                                     PROFILE.with_changes(income=70_000, target_age=60)])
+def test_paths_up_to_target_age_identical_to_before(grid, profile):
+    """Same seed, common random numbers: up to the target age nothing changes (bit for bit), and the
+    probability of FIRE by age (P, which keeps saving after T) is unchanged on the old horizon."""
+    old_path, old_wealth = _simulate_wealth_before_decumulation(profile, grid, RF, 2000, 11)
+    sim = fire.simulate_wealth(profile, grid, RF, 2000, 11)
+    upto = profile.target_age - profile.age + 1
+    np.testing.assert_array_equal(sim.wealth[:, :upto], old_wealth[:, :upto])
+    new = sim.path.iloc[:upto]
+    old = old_path.iloc[:upto]
+    trade_cols = [c for c in old.columns if c.startswith("trade_amt_")]   # at T the trade also pays e
+    pd.testing.assert_frame_equal(new[old.columns.drop(trade_cols)].iloc[:upto],
+                                  old.drop(columns=trade_cols), check_exact=True)
+    pd.testing.assert_frame_equal(new[trade_cols].iloc[:upto - 1], old[trade_cols].iloc[:upto - 1],
+                                  check_exact=True)
+    np.testing.assert_array_equal(sim.path["P"].iloc[:len(old_path)], old_path["P"])
+    assert fire.fire_summary(sim.path, profile.target_age)["ages"] == \
+        fire.fire_summary(old_path.assign(alive=1.0, SE_alive=0.0), profile.target_age)["ages"]
+
+
+def test_wealth_never_negative_and_ruin_is_absorbing(grid):
+    poor = PROFILE.with_changes(income=75_000, target_age=45)            # spends 60k on far too little
+    sim = fire.simulate_wealth(poor, grid, RF, N, 7)
+    assert (sim.wealth >= 0).all()
+    zero = sim.wealth == 0
+    assert zero[:, -1].mean() > 0.5                                    # many paths run out of money
+    first = np.where(zero.any(axis=1), zero.argmax(axis=1), sim.wealth.shape[1])
+    for k in np.flatnonzero(zero.any(axis=1)):
+        assert zero[k, first[k]:].all()                                # once at 0, always at 0
+    T = poor.target_age - poor.age
+    assert not zero[:, :T + 1].any()                                   # no spending before FIRE
+    alive = sim.path["alive"].to_numpy()
+    assert (np.diff(alive) <= 0).all() and alive[0] == 1.0
+    np.testing.assert_allclose(alive[-1], 1.0 - zero[:, -1].mean())
+
+
+def test_spending_lowers_wealth_after_fire(setup, grid):
+    """After T every path is below what it would be if saving went on; when the post-FIRE portfolio
+    earns less than the withdrawal, wealth falls on average."""
+    sim = fire.simulate_wealth(PROFILE, grid, RF, N, 7)
+    _, kept_saving = _simulate_wealth_before_decumulation(PROFILE, grid, RF, N, 7)
+    T = PROFILE.target_age - PROFILE.age
+    assert (sim.wealth[:, T + 1:kept_saving.shape[1]] < kept_saving[:, T + 1:]).all()
+    low = constant_grid(np.full(6, 0.02), setup[1])                 # 2% real return, 4% withdrawal
+    path = fire.simulate_wealth(PROFILE, low, RF, N, 7).path
+    after = path.loc[path["age"] >= PROFILE.target_age]
+    assert after["q50"].iloc[-1] < after["q50"].iloc[0] and after["W"].iloc[-1] < after["W"].iloc[0]
+    assert (np.diff(after["W"]) < 0).all()
+    assert {"q10", "q50", "q90"} <= set(sim.path.columns)
+    assert (sim.path["q10"] <= sim.path["q50"]).all() and (sim.path["q50"] <= sim.path["q90"]).all()
+
+
+def test_chance_money_lasts_is_a_probability_with_standard_error(grid):
+    sim = fire.simulate_wealth(PROFILE, grid, RF, N, 7)
+    s = fire.fire_summary(sim.path, PROFILE.target_age)
+    lasts = np.mean(sim.wealth_at(fire.HORIZON_AGE) > 0)
+    assert 0.0 <= s["p_last"] <= 1.0 and s["p_last"] == pytest.approx(lasts)
+    assert s["se_last"] == pytest.approx(np.sqrt(lasts * (1 - lasts) / N))
+    assert sim.path["age"].iloc[-1] == fire.HORIZON_AGE
+
+
+def test_chance_money_lasts_falls_when_expenses_rise(grid):
+    probs = [fire.fire_summary(fire.simulate_wealth(PROFILE.with_changes(expenses=e), grid, RF, N, 7).path,
+                               PROFILE.target_age)["p_last"] for e in (40_000, 60_000, 80_000)]
+    assert probs[0] > probs[1] > probs[2]
+
+
+def test_target_age_at_or_after_the_horizon(grid):
+    for T in (fire.HORIZON_AGE, fire.HORIZON_AGE + 3):
+        p = PROFILE.with_changes(age=80, target_age=T)
+        sim = fire.simulate_wealth(p, grid, RF, 200, 7)
+        assert sim.path["age"].iloc[-1] == T and (sim.wealth >= 0).all()
+        s = fire.fire_summary(sim.path, T)
+        assert s["p_last"] == 1.0 and s["se_last"] == 0.0                  # nothing spent before 95

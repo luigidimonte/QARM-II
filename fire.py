@@ -17,8 +17,9 @@ from market import RiskFree
 SIGMA_MIN_MARGIN = 0.005      # default sigma_min = constrained min-variance vol + 0.5pp
 SIGMA_MAX_FRACTION = 0.90     # default sigma_max = 90% of the maximum feasible vol
 PROB_LEVELS = (0.50, 0.75, 0.90)
-PERCENTILES = (5, 25, 50, 75, 95)
+PERCENTILES = (5, 10, 25, 50, 75, 90, 95)
 N_PATHS = 10_000
+HORIZON_AGE = 95             # the simulation (saving, then spending) runs until this age
 SEED = 42
 CLIP_TOL = 1e-4               # ignore clipping smaller than 0.01pp (rounding of UI inputs)
 MIN_RISK_SPREAD = 0.005       # below 0.5pp between sigma_min and sigma_max the glide path is ~flat
@@ -141,8 +142,8 @@ def gamma_bounds_from_sigma(sigma: np.ndarray, gammas: np.ndarray, weights: np.n
 
 
 def horizon_end_age(p: ClientProfile) -> int:
-    """Last age of the projection: max(target + 15, 65), capped at 100."""
-    return int(min(max(p.target_age + 15, 65), 100))
+    """Last age of the projection: HORIZON_AGE, or the target age if that is later."""
+    return int(max(HORIZON_AGE, p.target_age))
 
 
 @dataclass(frozen=True)
@@ -161,7 +162,8 @@ class ResampledGrid:
 @dataclass(frozen=True)
 class WealthSimulation:
     """Result of simulate_wealth. `path` has one row per age (averages over the simulated paths,
-    percentiles of wealth, probability of FIRE); `wealth` is n_paths x number of ages."""
+    percentiles of wealth, probability of FIRE, share of paths not yet ruined); `wealth` is
+    n_paths x number of ages (saving until the target age, then spending)."""
     path: pd.DataFrame
     wealth: np.ndarray
     n_paths: int
@@ -208,32 +210,47 @@ def simulate_wealth(p: ClientProfile, grid: ResampledGrid, rf: RiskFree,
 
     Each year, on every path: W_t -> gamma_t -> x_t (target_portfolio), then real asset returns
     are drawn jointly (lognormal_parameters, independent across years), and
-        W_{t+1} = W_t (1 + x_t'R_t) + c        (savings c enter at the end of the year).
+        before the target age T:  W_{t+1} = W_t (1 + x_t'R_t) + c      (savings at the end of the year)
+        from T on:                W_{t+1} = (W_t - e)(1 + x_t'R_t)      (spending e at the start)
+    with x_t the post-FIRE minimum-risk portfolio from T on. A path with W_t - e <= 0 is ruined:
+    its wealth is 0 from then on. P (probability of FIRE at each age, W >= K) is computed as if
+    the client kept saving c after T, so P at age a is the chance of FIRE with target age a.
     Normals are drawn year by year from default_rng(seed), so two runs with the same seed and
     n_paths share their random numbers even if the profiles or horizons differ.
     """
-    K, c = fire_target(p.expenses, p.swr), p.savings
+    K, c, e = fire_target(p.expenses, p.swr), p.savings, p.expenses
     ages = np.arange(p.age, horizon_end_age(p) + 1)
     n = len(grid.tickers)
     m_log, A = lognormal_parameters(grid.mu, grid.sigma)
     rng = np.random.default_rng(seed)
     wealth = np.empty((n_paths, len(ages)))
     wealth[:, 0] = p.wealth
+    saving = wealth[:, 0].copy()                  # wealth if saving went on after T (for P only)
+    alive = np.ones(n_paths, dtype=bool)          # not ruined by a withdrawal so far
     before = np.zeros((n_paths, n))                # money per ETF before rebalancing (today: cash)
     rows: List[Dict] = []
     for t, age in enumerate(ages):
         W = wealth[:, t]
         h = max(p.target_age - int(age), 0)
+        spending = int(age) >= p.target_age
         r, H, g, x = target_portfolio(W, h, p, grid, rf)
         m = x @ grid.mu
         s = np.sqrt(np.maximum(np.einsum("ki,ij,kj->k", x, grid.sigma, x), 0.0))
         invested = before.sum(axis=1, keepdims=True)
         drift = np.where(invested > 0, before / np.where(invested > 0, invested, 1.0), 0.0)
-        trade = x * W[:, None] - before
-        P = float(np.mean(W >= K))
+        if spending:
+            alive_now = alive.copy()
+            alive &= W - e > 0
+            kept = np.where(alive, W - e, 0.0)     # invested after this year's spending
+        else:
+            alive_now, kept = alive, W
+        trade = x * kept[:, None] - before
+        P = float(np.mean(saving >= K))
         row = {"age": int(age), "years": t, "W": W.mean(), "h": h, "rf": r, "H": H, "gamma": g.mean(),
                "m": m.mean(), "s": s.mean(),
                "K": K, "P": P, "SE": np.sqrt(P * (1.0 - P) / n_paths)}
+        L = float(alive_now.mean())                 # share of paths whose money lasted so far
+        row.update({"alive": L, "SE_alive": np.sqrt(L * (1.0 - L) / n_paths)})
         row.update({f"q{q}": v for q, v in zip(PERCENTILES, np.percentile(W, PERCENTILES))})
         for i, tick in enumerate(grid.tickers):
             row[f"w_{tick}"] = x[:, i].mean()
@@ -243,21 +260,31 @@ def simulate_wealth(p: ClientProfile, grid: ResampledGrid, rf: RiskFree,
         rows.append(row)
         if t + 1 < len(ages):
             R = np.exp(m_log + rng.standard_normal((n_paths, n)) @ A.T) - 1.0
-            before = W[:, None] * x * (1.0 + R)          # drift over the year
-            wealth[:, t + 1] = before.sum(axis=1) + c
+            if spending:
+                before = kept[:, None] * x * (1.0 + R)
+                wealth[:, t + 1] = before.sum(axis=1)
+                saving = (saving[:, None] * x * (1.0 + R)).sum(axis=1) + c
+            else:
+                before = W[:, None] * x * (1.0 + R)          # drift over the year
+                wealth[:, t + 1] = before.sum(axis=1) + c
+                saving = wealth[:, t + 1].copy()
     return WealthSimulation(pd.DataFrame(rows), wealth, n_paths, seed)
 
 
 def fire_summary(path: pd.DataFrame, target_age: int,
                  levels: Tuple[float, ...] = PROB_LEVELS) -> Dict:
-    """P(FIRE) at the target age, its Monte Carlo standard error, and the first ages at which P
-    reaches each level."""
+    """P(FIRE) at the target age, its Monte Carlo standard error, the first ages at which P
+    reaches each level, and the chance that the money lasts until HORIZON_AGE (share of paths not
+    ruined by then) with its standard error."""
     at_target = path.loc[path["age"] == target_age].iloc[0]
     ages: Dict[float, Optional[int]] = {}
     for lv in levels:
         hit = path.loc[path["P"] >= lv, "age"]
         ages[lv] = int(hit.iloc[0]) if len(hit) else None
-    return {"p_target": float(at_target["P"]), "se_target": float(at_target["SE"]), "ages": ages}
+    end = path.loc[path["age"] >= HORIZON_AGE]
+    last = end.iloc[0] if len(end) else path.iloc[-1]
+    return {"p_target": float(at_target["P"]), "se_target": float(at_target["SE"]), "ages": ages,
+            "p_last": float(last["alive"]), "se_last": float(last["SE_alive"])}
 
 
 def weights_table(path: pd.DataFrame, tickers: List[str], prefix: str = "w_") -> pd.DataFrame:

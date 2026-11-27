@@ -52,7 +52,7 @@ HEDGE_TEXT = ("Hedging removes the dollar/franc risk, but costs about the intere
 
 # ----------------------------------------------------------------------------- formatting
 def chf(x: float) -> str:
-    return f"CHF {x:,.0f}".replace(",", "'")
+    return f"CHF\u00a0{x:,.0f}".replace(",", "'")     # non-breaking space: "CHF" never wraps off the number
 
 
 def num(n: int) -> str:
@@ -507,8 +507,11 @@ HOVER_PCT = "Age %{x}<br>%{y:.1f}%<extra>%{fullData.name}</extra>"
 
 
 def prob_chart(paths: Dict[str, pd.DataFrame], target_ages: Dict[str, int]) -> go.Figure:
+    """Chance of FIRE by age; x axis until max(target + 15, 65) of the latest target (at most 100)."""
     fig = go.Figure()
+    end = min(max(max(target_ages.values()) + 15, 65), 100)
     for i, (name, path) in enumerate(paths.items()):
+        path = path.loc[path["age"] <= end]
         fig.add_trace(go.Scatter(x=path["age"], y=path["P"] * 100, name=name, mode="lines+markers",
                                  line=dict(width=2.5 if i == 0 else 2, dash=None if i == 0 else "dash",
                                            color=BLUE if i == 0 else STEEL),
@@ -532,38 +535,40 @@ POST_FIRE = "post-FIRE, minimum risk"
 
 
 def fan_chart(sim: fire.WealthSimulation, K: float, target_age: int) -> go.Figure:
-    """Percentiles of simulated wealth by age (5-95 and 25-75 bands, median) and the first
-    N_SAMPLE_PATHS simulated paths, coloured by the FIRE condition (W >= K at the target age)."""
+    """Percentiles of simulated wealth by age (10-90 and 25-75 bands, median) until fire.HORIZON_AGE
+    and the first N_SAMPLE_PATHS simulated paths, coloured by the FIRE condition (W >= K at the
+    target age). The y axis stops a little above the 90th percentile, so the bands stay readable."""
     path = sim.path
     fig = go.Figure()
     hover = "%{fullData.name}: CHF %{y:,.0f}<extra></extra>"
-    for lo, hi, fill in ((5, 95, ui.FAN_OUTER), (25, 75, ui.FAN_INNER)):
-        edge = dict(width=0.5, color=fill)
-        fig.add_trace(go.Scatter(x=path["age"], y=path[f"q{hi}"], mode="lines", line=edge, showlegend=False,
-                                 name=f"{hi}th percentile", hovertemplate=hover))
-        fig.add_trace(go.Scatter(x=path["age"], y=path[f"q{lo}"], mode="lines", line=edge, showlegend=False,
-                                 name=f"{lo}th percentile", hovertemplate=hover, fill="tonexty", fillcolor=fill))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=f"{lo}th to {hi}th percentile",
-                                 marker=dict(size=12, symbol="square", color=fill)))     # legend key
-    sample = sim.wealth[:N_SAMPLE_PATHS]
+    sample = sim.wealth[:N_SAMPLE_PATHS]                # drawn first: the bands lie on top of them
     ok = sim.wealth_at(target_age)[:N_SAMPLE_PATHS] >= K
-    for name, rows, color in (("Sample paths that reach K", sample[ok], ui.REACHED),
-                              ("Sample paths that miss K", sample[~ok], ui.MISSED)):
+    for rank, (name, rows, color) in enumerate((("Sample paths that miss K", sample[~ok], ui.MISSED),
+                                                ("Sample paths that reach K", sample[ok], ui.REACHED)), 2):
         xs = np.tile(np.append(path["age"].values.astype(float), np.nan), len(rows))   # NaN = pen up
         ys = np.column_stack([rows, np.full(len(rows), np.nan)]).ravel()
         fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(width=0.7, color=color), opacity=0.25,
                                  connectgaps=False, showlegend=False, hoverinfo="skip", name=name))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(width=2, color=color),
-                                 name=f"{name} ({len(rows)})"))                        # legend key
+                                 name=f"{name} ({len(rows)})", legendrank=6 - rank))  # legend key; Plotly lists fills last-rank first
+    for rank, (lo, hi, fill, edge) in ((1, (10, 90, ui.FAN_OUTER, dict(width=1.2, color=STEEL))),
+                                       (2, (25, 75, ui.FAN_INNER, dict(width=0.5, color=ui.FAN_INNER)))):
+        fig.add_trace(go.Scatter(x=path["age"], y=path[f"q{hi}"], mode="lines", line=edge, showlegend=False,
+                                 name=f"{hi}th percentile", hovertemplate=hover))
+        fig.add_trace(go.Scatter(x=path["age"], y=path[f"q{lo}"], mode="lines", line=edge, showlegend=False,
+                                 name=f"{lo}th percentile", hovertemplate=hover, fill="tonexty", fillcolor=fill))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=f"{lo}th to {hi}th percentile",
+                                 marker=dict(size=12, symbol="square", color=fill), legendrank=rank))
     fig.add_trace(go.Scatter(x=path["age"], y=path["q50"], name="Median", mode="lines",
-                             line=dict(width=3, color=ui.SLATE_BLUE), hovertemplate=hover))
+                             line=dict(width=3, color=ui.SLATE_BLUE), hovertemplate=hover, legendrank=5))
     fig.add_hline(y=K, line=dict(color=NAVY, width=1.2, dash="dash"), annotation_text=f"FIRE capital {chf(K)}",
                   annotation_position="top left", annotation_font=dict(color=NAVY, size=12))
     fig.add_vline(x=target_age, line=dict(color=NAVY, width=1.2, dash="dash"),
                   annotation_text=f"target {target_age}", annotation_position="top left",
                   annotation_font=dict(color=NAVY, size=12))
     fig.update_layout(xaxis_title="Age", yaxis_title="Today's CHF", yaxis_tickformat=",.0f",
-                      yaxis_rangemode="tozero", height=540, hovermode="x unified")
+                      yaxis_range=[0, 1.1 * max(float(path["q90"].max()), K)], height=540,
+                      hovermode="x unified")
     return fig
 
 
@@ -713,18 +718,19 @@ def tab_profile(profile: fire.ClientProfile, sim: fire.WealthSimulation, gb: Dic
     ui.show(fan_chart(sim, K, profile.target_age))
     st.caption(f"Simulated wealth in today's CHF, with {N_SAMPLE_PATHS} of the {num(sim.n_paths)} simulated paths. "
                f"A path reaches the goal if its wealth satisfies $W_T \\ge K$ at age {profile.target_age}. "
-               f"Average of the simulated paths at {profile.target_age}: {chf(at_target['W'])}. After "
-               f"{profile.target_age} the chart shows what happens if you keep saving the same amount, with the "
-               f"{POST_FIRE} portfolio; spending your wealth in retirement is not simulated.")
+               f"Average of the simulated paths at {profile.target_age}: {chf(at_target['W'])}. From "
+               f"{profile.target_age} on you stop saving and spend {chf(profile.expenses)} a year from the "
+               f"{POST_FIRE} portfolio.")
 
 def tab_probability(profile: fire.ClientProfile, sim: fire.WealthSimulation, grid: fire.ResampledGrid,
                     summary: Dict) -> None:
     ages, path = summary["ages"], sim.path
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(f"Chance of FIRE by {profile.target_age}", pct(summary["p_target"]))
     for col, lv in zip((c2, c3, c4), fire.PROB_LEVELS):
         col.metric(f"Age with {lv:.0%} chance", str(ages[lv]) if ages[lv] else
                    f"after {int(path['age'].iloc[-1])}")
+    c5.metric(f"Chance your money lasts until {fire.HORIZON_AGE}", pct(summary["p_last"]))
     st.caption(mc_caption(summary, sim))
     st.divider()
     st.subheader(f"Possible wealth at {profile.target_age}", anchor=False)
@@ -817,12 +823,13 @@ def what_if(profile: fire.ClientProfile, sim: fire.WealthSimulation, grid: fire.
         a = s["ages"]
         return [pct(p.savings / p.income if p.income else 0, 0), chf(p.expenses),
                 chf(fire.fire_target(p.expenses, p.swr)), str(p.target_age), pct(s["p_target"]),
-                f"±{s['se_target'] * 100:.2f} pp"] + \
-               [str(a[lv]) if a[lv] else "-" for lv in fire.PROB_LEVELS]
+                f"±{s['se_target'] * 100:.2f}\u00a0pp"] + \
+               [str(a[lv]) if a[lv] else "-" for lv in fire.PROB_LEVELS] + [pct(s["p_last"])]
 
     idx = ["Savings rate", "Yearly expenses", "FIRE capital", "Target age", "Chance by target age",
            "Standard error"] + \
-          [f"Age with {lv:.0%} chance" for lv in fire.PROB_LEVELS]
+          [f"Age with {lv:.0%} chance" for lv in fire.PROB_LEVELS] + \
+          [f"Chance your money lasts until {fire.HORIZON_AGE}"]
     ui.show_table(pd.DataFrame({"Current plan": col(profile, summary), "Alternative": col(alt, alt_summary)},
                                index=idx), hide_index=False, align="right")
 
@@ -881,8 +888,8 @@ def main() -> None:
     head.markdown('<div class="fp-eyebrow">Your plan</div>', unsafe_allow_html=True)
     if name:
         head.subheader(f"{name}, here is your plan", anchor=False)
-    top1.button("Change my answers", on_click=go_to, args=(SUMMARY,), width="stretch")
-    top2.button("Start over", on_click=go_to, args=(0,), width="stretch")
+    top1.button("Change my answers", on_click=go_to, args=(SUMMARY,), width="stretch", key="fp_change")
+    top2.button("Start over", on_click=go_to, args=(0,), width="stretch", key="fp_restart")
 
     profile = profile_from_state()
     errors, warns = fire.validate_profile(profile)

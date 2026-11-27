@@ -2,7 +2,7 @@
 Nothing in here computes anything; it only decides how results look.
 """
 from __future__ import annotations
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Sequence
 import html
 import json
 
@@ -37,6 +37,7 @@ TABLE_GRID = "#E2E4E7" # lines between table cells
 TABLE_BORDER = "#E2E4E7" # outer table border
 TABLE_RADIUS = "0.5rem" # rounded table corners; they also clip the burgundy header row
 BUTTON_RADIUS = "999px" # corner radius of every button: "999px" = pill, e.g. "10px" for softer corners
+CARD_RADIUS = "16px"    # corner radius of metric cards, bordered containers, alerts, expanders and inputs
 # one hue per asset
 
 ASSET_COLORS: Dict[str, str] = {
@@ -86,12 +87,17 @@ def show(fig: go.Figure, **kwargs) -> None:
 
 # ----------------------------------------------------------------------------- tables
 
+WRAP_COLUMNS = ("Asset class",)         # long text columns: the only cells that may wrap (between words)
+
+
 def show_table(df: pd.DataFrame, formats: Optional[Dict[str, Callable]] = None,
-                hide_index: bool = True, align: Optional[str] = None) -> None:
+                hide_index: bool = True, align: Optional[str] = None,
+                wrap: Sequence[str] = WRAP_COLUMNS) -> None:
     """Static table (st.table, HTML), so that it gets the table style of the CSS below like every
     other table: burgundy header row, black text (st.dataframe draws on a canvas CSS cannot style).
     Cells are aligned by type (text left, numbers right) unless `align` ("left"/"right") is given,
-    e.g. for numbers already formatted as text."""
+    e.g. for numbers already formatted as text. No cell or header breaks inside a value (CSS
+    nowrap; the table scrolls sideways on narrow screens) except the text columns in `wrap`."""
     formats = dict(formats or {})
     if hide_index:                       # st.table ignores Styler.hide: show the first column as the
         first = df.columns[0]            # row labels instead (header kept, no 0..n column)
@@ -102,6 +108,10 @@ def show_table(df: pd.DataFrame, formats: Optional[Dict[str, Callable]] = None,
         sty = sty.format_index(first_format, axis="index")
     if align:
         sty = sty.set_properties(**{"text-align": f"{align} !important"})   # beats Streamlit's inline style
+    wrap_cols = [c for c in wrap if c in df.columns]
+    if wrap_cols:
+        sty = sty.set_properties(subset=wrap_cols, **{"white-space": "normal !important",
+                                                      "min-width": "5.5rem"})
     st.table(sty)
 
 # ----------------------------------------------------------------------------- CSS
@@ -142,6 +152,9 @@ header[data-testid="stHeader"] a,
 header[data-testid="stHeader"] span,
 header[data-testid="stHeader"] svg {{ color: {HERO_TEXT} !important; fill: {HERO_TEXT} !important; }}
 header[data-testid="stHeader"] button:hover {{ background: rgba(255,255,255,0.12) !important; }}
+/* End users get no Deploy button, main menu (Settings, theme chooser) or toolbar; the header band stays
+   (fixed height, so nothing shifts). config.toml also sets client.toolbarMode = "minimal". */
+[data-testid="stMainMenu"], [data-testid="stAppDeployButton"], [data-testid="stToolbar"] {{ display: none !important; }}
 /* Layout: wide, editorial, with generous white space */
 [data-testid="stMainBlockContainer"], .block-container {{
 max-width: 1080px;
@@ -260,7 +273,7 @@ animation: fpFadeUp 480ms 80ms var(--ease) both;
 /* Cards / bordered Streamlit containers: pale grey, flat, institutional */
 [data-testid="stVerticalBlockBorderWrapper"] {{
 border: 0 !important;
-border-radius: var(--radius) !important;
+border-radius: {CARD_RADIUS} !important;
 background: #F4F4F6;
 box-shadow: none;
 padding: 0.35rem;
@@ -271,13 +284,27 @@ transform: translateY(-2px);
 box-shadow: var(--shadow-hover);
 background: #F2F2F4;
 }}
+/* Streamlit 1.50 draws st.container(border=True) on the stVerticalBlock itself (no wrapper, no testid of
+   its own), so the radius goes on every vertical block; it only shows where a block has a border. The
+   full-width burgundy hero keeps its square edges. */
+[data-testid="stVerticalBlock"]:not(.st-key-fp_hero) {{ border-radius: {CARD_RADIUS}; }}
+[data-testid="stForm"] {{ border-radius: {CARD_RADIUS}; }}
+/* charts: the light chart background is drawn inside Plotly's SVG, so the container clips it */
+[data-testid="stPlotlyChart"] {{ border-radius: {CARD_RADIUS}; overflow: hidden; }}
+/* number inputs: the border sits on the container around the field and the -/+ buttons */
+[data-testid="stNumberInputContainer"] {{ border-radius: {CARD_RADIUS} !important; overflow: hidden; }}
+[data-testid="stNumberInputContainer"] [data-baseweb="input"] {{ border-radius: 0 !important; }}
+/* a row of metric cards: every card as tall as the tallest (e.g. the one with a delta line) */
+[data-testid="stColumn"]:has(> [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] > [data-testid="stMetric"]) > [data-testid="stVerticalBlock"],
+[data-testid="stElementContainer"]:has(> [data-testid="stMetric"]) {{ height: 100%; }}
+[data-testid="stMetric"] {{ height: 100%; box-sizing: border-box; }}
 /* Metric cards stay quieter and more analytical */
 [data-testid="stMetric"] {{
 position: relative;
 overflow: hidden;
 background: #FFFFFF;
 border: 1px solid var(--line);
-border-radius: var(--radius);
+border-radius: {CARD_RADIUS};
 padding: 0.9rem 0.95rem;
 box-shadow: none;
 transition: transform 180ms var(--ease), box-shadow 220ms var(--ease), border-color 180ms ease;
@@ -300,6 +327,10 @@ box-shadow: 0 9px 22px rgba(17,17,17,0.065);
 border-color: {SLATE_BLUE};
 }}
 [data-testid="stMetric"]:hover::before {{ transform: scaleX(1); }}
+/* metric labels wrap between words instead of being cut off with "..." (five cards in a row) */
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {{
+white-space: normal !important; overflow: visible !important; text-overflow: clip !important;
+}}
 [data-testid="stMetricLabel"] p {{
 font-size: 0.9rem !important;
 font-weight: 500;
@@ -377,6 +408,18 @@ button[data-testid="stBaseButton-tertiary"],
 [data-testid="stDownloadButton"] button,
 button[data-testid^="stBaseButton-pills"],
 button[data-testid^="stBaseButton-segmented_control"] {{ border-radius: {BUTTON_RADIUS} !important; }}
+/* "Change my answers" / "Start over": never wrap the label; on wider screens the two buttons take
+   the width of their text and the row wraps instead (phones keep Streamlit's stacked full-width buttons) */
+.st-key-fp_change button p, .st-key-fp_restart button p {{ white-space: nowrap; }}
+@media (min-width: 641px) {{
+[data-testid="stHorizontalBlock"]:has(.st-key-fp_change) {{ flex-wrap: wrap; row-gap: 0.5rem; }}
+[data-testid="stColumn"]:has(.st-key-fp_change), [data-testid="stColumn"]:has(.st-key-fp_restart) {{
+flex: 0 0 auto !important; width: auto !important; min-width: 0 !important;
+}}
+[data-testid="stHorizontalBlock"]:has(.st-key-fp_change) > [data-testid="stColumn"]:first-child {{
+flex: 1 1 12rem !important; width: auto !important; min-width: 0 !important;
+}}
+}}
 [data-testid="stBaseButton-secondary"]:hover {{
 border-color: {SLATE_BLUE} !important;
 background: #FFFFFF !important;
@@ -388,7 +431,7 @@ font-size: 0.98rem !important;
 color: var(--ink) !important;
 }}
 [data-baseweb="input"], [data-baseweb="select"] > div {{
-border-radius: 0 !important;
+border-radius: {CARD_RADIUS} !important;
 background: #FFFFFF !important;
 }}
 [data-baseweb="input"] input, [data-baseweb="select"] {{
@@ -435,6 +478,8 @@ border-radius: {TABLE_RADIUS};
 overflow: hidden;
 background: {TABLE_ROW};
 }}
+/* narrow screens: the table scrolls sideways (Streamlit's inner wrapper div) instead of squeezing columns */
+[data-testid="stTable"] > div {{ overflow-x: auto !important; overflow-y: hidden; -webkit-overflow-scrolling: touch; }}
 [data-testid="stTable"] table {{ border-collapse: separate; border-spacing: 0; width: 100%; border: none !important; }}
 [data-testid="stTable"] th, [data-testid="stTable"] td {{
 background: {TABLE_ROW} !important;
@@ -444,6 +489,10 @@ border-right: 1px solid {TABLE_GRID} !important;
 border-bottom: 1px solid {TABLE_GRID} !important;
 padding: 0.7rem 0.85rem;
 font-size: 0.95rem;
+white-space: nowrap;                 /* never break inside a value, ticker or header word */
+overflow-wrap: normal;
+word-break: keep-all;
+hyphens: none;
 }}
 [data-testid="stTable"] tr > :last-child {{ border-right: none !important; }}
 [data-testid="stTable"] tbody tr:last-child > * {{ border-bottom: none !important; }}
@@ -464,6 +513,11 @@ font-variant-numeric: lining-nums tabular-nums;
 [data-testid="stTable"] tbody th {{ text-align: left !important; }}
 [data-testid="stTable"] tbody tr > * {{ transition: background-color 140ms ease; }}
 [data-testid="stTable"] tbody tr:hover > * {{ background: #F2F3F5 !important; }}
+@media (max-width: 640px) {{
+[data-testid="stTable"] th, [data-testid="stTable"] td {{ padding: 0.45rem 0.4rem; }}
+[data-testid="stTable"] td {{ font-size: 0.88rem; }}
+[data-testid="stTable"] th {{ font-size: 0.82rem; }}
+}}
 [data-testid="stDataFrame"] {{
 border: 1px solid var(--line);
 border-radius: 0;
@@ -473,7 +527,7 @@ background: #FFFFFF;
 /* Expanders */
 [data-testid="stExpander"] details {{
 border: 1px solid var(--line) !important;
-border-radius: 0 !important;
+border-radius: {CARD_RADIUS} !important;
 background: #FFFFFF;
 transition: border-color 160ms ease, box-shadow 200ms ease;
 }}
@@ -483,7 +537,7 @@ box-shadow: 0 6px 16px rgba(17,17,17,0.04);
 }}
 [data-testid="stExpander"] summary p {{ font-size: 1rem; font-weight: 500; color: var(--ink); }}
 /* Alerts */
-[data-testid="stAlert"] {{ border-radius: 0 !important; }}
+[data-testid="stAlert"], [data-testid="stAlertContainer"] {{ border-radius: {CARD_RADIUS} !important; }}
 /* Accessibility */
 @media (prefers-reduced-motion: reduce) {{
 *, ::before, ::after {{
