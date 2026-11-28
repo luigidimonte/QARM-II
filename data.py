@@ -141,13 +141,3 @@ def estimate_moments(rets: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame, int]:
     sigma = rets.cov() * MONTHS_PER_YEAR
     return mu, sigma, len(rets)
 
-
-def adjust_expected_returns(mu, adjustment: float):
-    """mu minus `adjustment` (yearly, e.g. 0.01 = 1 percentage point) for every asset.
-
-    The historical means over the sample include a long equity bull market and the gold rally,
-    so they are optimistic as a forecast; the adjustment stresses that assumption. It is applied
-    before the optimisation and before the resampling draws (they are centred on the adjusted mu).
-    Sigma is not changed. adjustment = 0 returns mu unchanged.
-    """
-    return mu - adjustment

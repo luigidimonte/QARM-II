@@ -121,8 +121,3 @@ def test_validate_returns_flags_problems(monthly):
     assert any("No data for: XYZ" in p for p in data.validate_returns(monthly, TICKERS + ["XYZ"]))
     assert any("months" in p for p in data.validate_returns(monthly.iloc[:30], TICKERS))
 
-
-def test_expected_return_adjustment(monthly):
-    mu, sigma, _ = data.estimate_moments(monthly)
-    pd.testing.assert_series_equal(data.adjust_expected_returns(mu, 0.0), mu)           # 0: unchanged
-    np.testing.assert_allclose(data.adjust_expected_returns(mu, 0.015).values, mu.values - 0.015)

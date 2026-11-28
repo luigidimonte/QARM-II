@@ -19,7 +19,6 @@ All amounts are in **today's CHF** (real terms). Returns are real CHF returns, s
 - **Sample**: month-end prices on the last common trading day of each month, common sample of all assets, without the current (incomplete) month and without months whose CPI is not published yet. At the time of writing: Dec 2004 - Oct 2026, T = 263 months (the app shows the current window).
 - **Estimates**: μ = 12 × monthly mean and Σ = 12 × monthly covariance of the real CHF returns.
 - **Expected returns are historical estimates** (project assumption). μ is the historical arithmetic mean over the sample window. The window includes a long equity bull market and the gold rally, so μ is optimistic as a forecast. The app labels the expected return "historical estimate".
-- **Expected return adjustment** (Advanced settings, 0 to 4 percentage points per year, step 0.5, default 0): subtracted from the expected real return of every asset before the optimisation, before the resampling draws (the draws are centred on the adjusted μ) and in the Monte Carlo; Σ is unchanged. Because the same amount is subtracted from every asset and the portfolio is fully invested (1'x = 1), the optimal weights do not change: the adjustment lowers the expected return of the portfolio and so the probability of FIRE. To change the allocation, use the investment preferences (below).
 
 ### Currency hedging and inflation (project assumptions, not from the course)
 
@@ -63,7 +62,7 @@ x*(γ) = argmin_x  ½ x'Σx − γ x'μ    subject to  1'x = 1,  l_i ≤ x_i ≤
 
 Weights at any γ are interpolated linearly between grid points (convex combinations, hence feasible). The risk targets of the plan are hit on this resampled frontier: σ-problem on the averaged weights, with the original Σ.
 
-The resampling and the γ grid are the heavy step (about 1.5 minutes): they are computed **once, when the questionnaire is submitted**, and cached. They depend only on the data sample, the hedging choice, the investment rules, the expected return adjustment, K and the seed; changing anything else (age, income, expenses, wealth, FIRE age, withdrawal rate, inflation, risk range, the *What if* sliders) never recomputes them.
+The resampling and the γ grid are the heavy step (about 1.5 minutes): they are computed **once, when the questionnaire is submitted**, and cached. They depend only on the data sample, the hedging choice, the investment rules, K and the seed (fixed at 42); changing anything else (age, income, expenses, wealth, FIRE age, withdrawal rate, inflation, risk range, the *What if* sliders) never recomputes them.
 
 ### Dynamic risk tolerance γ_t (project layer)
 
@@ -87,7 +86,7 @@ p̂ = (1/N) Σ_k 1{W_T^(k) ≥ K},       SE = sqrt(p̂ (1 − p̂) / N)
 - N = 10'000 paths, yearly steps until age 95. γ_t is computed on each path from that path's own wealth; the portfolio is rebalanced to its target every year and the savings c enter at the end of the year. From the target age the yearly expenses e are withdrawn at the start of each year.
 - Yearly gross asset returns are jointly lognormal, with mean and covariance matched exactly to the point estimates μ and Σ of the real CHF returns (not the resampled ones), independent across years. The moments are treated as known: parameter uncertainty enters only through the resampled weights.
 - T is the target age: the probability is the share of paths with wealth of at least K at that age, not of having crossed K before. The standard error measures simulation noise only, not model or estimation error.
-- The same seed (Advanced settings, default 42) gives the same simulated markets. The current plan and the *What if* alternative share them (common random numbers), so their difference is not blurred by simulation noise.
+- Results use a fixed random seed of 42 (resampling and Monte Carlo), so the same answers always give the same simulated markets. The current plan and the *What if* alternative share them (common random numbers), so their difference is not blurred by simulation noise.
 
 ### All assumptions: course vs project layer
 
@@ -97,7 +96,7 @@ p̂ = (1/N) Σ_k 1{W_T^(k) ≥ K},       SE = sqrt(p̂ (1 − p̂) / N)
 | Estimation error | Resampled frontier, joint normal i.i.d. draws (Michaud 2007) | Course (LN 3, slides 11-12) |
 | Yield curve | Interpolation linear in the discount factor | Course (Fixed Income and Credit Risk) |
 | Investment rules | Default 30% cap per asset; gold capped at 15% (exceptionally high historical return for an asset without cash flows); no minimum; client-defined minimum and maximum per asset class | Project layer |
-| Expected returns | Historical arithmetic mean over the sample window, optimistic as a forecast; optional adjustment of 0-4 pp for every asset | Project layer |
+| Expected returns | Historical arithmetic mean over the sample window, optimistic as a forecast | Project layer |
 | Spot rates | The SNB publishes spot rates, so no par-yield conversion is needed | Project layer |
 | USD 1-year rate | Treasury yield from FRED (DGS1), used as the 1-year spot rate | Project layer |
 | Hedging | 1-year forward rolled monthly, no cross-currency basis, 100% of the initial value | Project layer |
@@ -117,7 +116,7 @@ p̂ = (1/N) Σ_k 1{W_T^(k) ≥ K},       SE = sqrt(p̂ (1 − p̂) / N)
 | File | Content |
 |---|---|
 | `app_fire.py` | Streamlit UI only |
-| `data.py` | asset configuration, price download, CHF conversion, hedging, deflation, annualised μ and Σ, expected return adjustment |
+| `data.py` | asset configuration, price download, CHF conversion, hedging, deflation, annualised μ and Σ |
 | `market.py` | USD/CHF and US 1-year rate (FRED), Confederation curve and Swiss CPI (SNB), risk-free rate |
 | `data/` | local copies used if FRED or the SNB cannot be reached |
 | `optimizer.py` | default rules (`CONFIG`), per-asset bounds and feasibility check, γ-problem, σ-problem, resampling |
@@ -137,7 +136,7 @@ pip install -r requirements.txt
 streamlit run app_fire.py
 ```
 
-The questionnaire itself is instant (market data are downloaded once and cached for one day). Showing the plan computes the resampled portfolios (1'000 draws), which takes about 1.5 minutes; it runs again only for a new combination of currency hedging, investment rules and expected return adjustment. Moving the *What if* sliders takes about a second.
+The questionnaire itself is instant (market data are downloaded once and cached for one day). Showing the plan computes the resampled portfolios (1'000 draws), which takes about 1.5 minutes; it runs again only for a new combination of currency hedging and investment rules. Moving the *What if* sliders takes about a second.
 
 Tests:
 

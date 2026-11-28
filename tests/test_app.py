@@ -131,7 +131,7 @@ def test_hedging_is_a_questionnaire_answer_and_read_only_in_the_plan(app):
 def test_advanced_settings(app):
     app.session_state["step"] = ASSUMPTIONS
     app.run()
-    assert {n.label for n in app.number_input} == {"Random seed"}    # number of paths is fixed
+    assert not app.number_input                                      # no seed, number of paths is fixed
     rate = next(m for m in app.metric if m.label.startswith("Risk-free rate"))
     assert rate.label == "Risk-free rate for 15 years (real)"
     assert rate.value == f"{1.00545 / 1.01 - 1:.2%}"                 # 15J node of July 2025, inflation 1%
@@ -271,22 +271,12 @@ def test_infeasible_stored_rules_never_reach_the_optimiser(app, monkeypatch):
     assert any("The investment rules cannot be met" in e.value for e in app.error)
 
 
-# ----------------------------------------------------------------------------- expected return adjustment
+# ----------------------------------------------------------------------------- expected returns
 def results(at) -> dict:
     """Probability of FIRE and today's expected return (Portfolio tab caption)."""
     cap = next(c.value for c in at.caption if c.value.startswith("Expected return "))
     return {"P": float({m.label: m.value for m in at.metric}["Chance of FIRE by 55"].rstrip("%")),
             "m": float(cap.split()[2].rstrip("%")), "caption": cap}
-
-
-def set_adjustment(at, value):
-    at.session_state["step"] = ASSUMPTIONS
-    at.run()
-    at.slider(key="_mu_adj").set_value(value).run()
-    assert not at.exception and not at.error
-    at.session_state["step"] = RESULTS
-    at.run()
-    assert not at.exception and not at.error
 
 
 def test_historical_estimates_are_declared(app):
@@ -296,24 +286,15 @@ def test_historical_estimates_are_declared(app):
     assert "an average of past returns (Feb 2008 - Dec 2024)" in results(app)["caption"]   # sample of fake_prices
 
 
-def test_adjustment_lowers_returns_and_probability_and_changes_the_cache_key(app, monkeypatch):
-    calls = count_resampling(monkeypatch)
+def test_removed_inputs_and_methodology_expander(app):
     app.session_state["step"] = ASSUMPTIONS
     app.run()
-    assert app.slider(key="_mu_adj").value == 0.0                         # default: historical means
-    caps = " ".join(c.value for c in app.caption)
-    assert "By default (0) the expected returns are the historical means of" in caps and "optimistic" in caps
+    assert "_mu_adj" not in [s.key for s in app.slider] and "mu_adj" not in app.session_state
+    assert "seed" not in app.session_state
     app.session_state["step"] = RESULTS
     app.run()
-    base, n, x0 = results(app), len(calls), allocation(app)
-    set_adjustment(app, 2.0)
-    low = results(app)
-    assert len(calls) == n + 1                                             # new cache key
-    assert low["m"] < base["m"] and low["P"] < base["P"]
-    assert "historical estimate minus 2.0 pp" in low["caption"]
-    np.testing.assert_allclose(allocation(app), x0, atol=1e-6)          # same shift for all: same weights
-    set_adjustment(app, 0.0)
-    assert results(app) == base and len(calls) == n + 1                    # 0: identical, cached
+    assert "Model & methodology" not in [e.label for e in app.expander]
+    assert "seed 42" in " ".join(c.value for c in app.caption)          # fixed seed fire.SEED
 
 
 # ----------------------------------------------------------------------------- UI cleanup
@@ -364,9 +345,9 @@ def test_resampling_runs_once_at_submit_and_never_for_other_answers(app, monkeyp
     next(b for b in app.button if b.label == "Reset to initial answers").click().run()
     assert len(calls) == 1
     # answers that do not enter the resampling: age, income, expenses, wealth, FIRE age, SWR,
-    # inflation, seed, risk range
+    # inflation, risk range
     for key, value in (("age", 35), ("income", 160_000), ("expenses", 70_000), ("wealth", 500_000),
-                       ("target_age", 52), ("swr", 3.5), ("infl", 2.0), ("seed", 7), ("risk_manual", True)):
+                       ("target_age", 52), ("swr", 3.5), ("infl", 2.0), ("risk_manual", True)):
         app.session_state[key] = value
         if "_" + key in app.session_state:                               # widget shows the new answer
             del app.session_state["_" + key]
@@ -376,8 +357,6 @@ def test_resampling_runs_once_at_submit_and_never_for_other_answers(app, monkeyp
     assert what_if_table(app).loc["Chance by target age", "Current plan"] != p0   # the plan did change
     set_hedging(app, False)                                              # inputs of the resampling
     assert len(calls) == 2
-    set_adjustment(app, 1.0)
-    assert len(calls) == 3
 
 
 def test_manual_risk_range(app, monkeypatch):

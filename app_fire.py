@@ -36,12 +36,12 @@ PRESETS: Dict[str, Dict] = {
     "Mid career (40)": dict(age=40, income=150_000, expenses=85_000, wealth=400_000, target_age=55),
     "Late starter (50)": dict(age=50, income=130_000, expenses=90_000, wealth=600_000, target_age=60),
 }
-DEFAULTS: Dict = dict(PRESETS["Mid career (40)"], name="", swr=4.0, infl=1.0, seed=fire.SEED,
+DEFAULTS: Dict = dict(PRESETS["Mid career (40)"], name="", swr=4.0, infl=1.0,
                       hedged=True, rf_manual=False, rf_flat=0.0)
 NO_PREF, OWN_PREF = "No preference", "Yes"
 PREF_QUESTION = "Do you have preferences about where you would like to be invested?"
 DEFAULT_LOWER, DEFAULT_UPPER = (tuple(float(v) for v in b) for b in opt.weight_bounds(TICKERS))
-DEFAULTS.update(prefs=NO_PREF, rules=None, mu_adj=0.0, risk_manual=False,
+DEFAULTS.update(prefs=NO_PREF, rules=None, risk_manual=False,
                 **{f"lo_{t}": round(lo * 100, 6) for t, lo in zip(TICKERS, DEFAULT_LOWER)},
                 **{f"hi_{t}": round(hi * 100, 6) for t, hi in zip(TICKERS, DEFAULT_UPPER)})
 DEFAULT_RULES_TEXT = (f"At most {opt.CONFIG['max_weight']:.0%} in any asset class, at most "
@@ -87,16 +87,14 @@ def rules_config(tickers: List[str], lower: tuple, upper: tuple) -> Dict:
 
 @st.cache_data(show_spinner=False)
 def build_model(rets: pd.DataFrame, hedged: bool, n_resamples: int, seed: int,
-                lower: tuple, upper: tuple, mu_adj: float = 0.0) -> Dict:
+                lower: tuple, upper: tuple) -> Dict:
     """Estimates on real CHF returns, constrained frontier, gamma grid and resampled weights:
     the heavy step, run once when the questionnaire is submitted. One cache entry per data sample
-    (which includes the hedging choice), set of bounds lower <= x <= upper, expected return
-    adjustment, K and seed; it does not depend on any other answer. mu_adj (yearly, e.g. 0.01 = 1pp) is subtracted from the historical mu of
-    every asset before the optimisation and the resampling draws; Sigma is unchanged."""
+    (which includes the hedging choice), set of bounds lower <= x <= upper, K and seed (always
+    fire.SEED in the app); it does not depend on any other answer."""
     tickers = list(rets.columns)
     config = rules_config(tickers, lower, upper)
     mu, sigma, T = data.estimate_moments(rets)
-    mu = data.adjust_expected_returns(mu, mu_adj)
     mu_v, sig_v = mu.values, sigma.values
     bounds = opt.frontier_bounds(mu_v, sig_v, tickers, config=config)
     gammas = opt.gamma_grid(mu_v, sig_v, tickers, bounds=bounds, config=config)
@@ -104,15 +102,14 @@ def build_model(rets: pd.DataFrame, hedged: bool, n_resamples: int, seed: int,
                                      n_resamples, seed, config)
     rs_bounds = opt.resampled_frontier_bounds(gammas, resampled, sig_v)
     return {"tickers": tickers, "mu": mu_v, "sigma": sig_v, "rs_bounds": rs_bounds, "gammas": gammas,
-            "resampled": resampled, "mu_adj": mu_adj, "start": rets.index[0], "end": rets.index[-1]}
+            "resampled": resampled, "start": rets.index[0], "end": rets.index[-1]}
 
 
 @st.cache_data(show_spinner=False)
-def point_risk_range(rets: pd.DataFrame, lower: tuple, upper: tuple, mu_adj: float) -> tuple:
+def point_risk_range(rets: pd.DataFrame, lower: tuple, upper: tuple) -> tuple:
     """Volatility range (sigma_minus, sigma_plus) of the point-estimate constrained frontier: cheap,
     used only for the manual risk sliders before the plan is computed."""
     mu, sigma, _ = data.estimate_moments(rets)
-    mu = data.adjust_expected_returns(mu, mu_adj)
     tickers = list(rets.columns)
     return opt.frontier_bounds(mu.values, sigma.values, tickers, config=rules_config(tickers, lower, upper))[:2]
 
@@ -153,7 +150,7 @@ def risk_free() -> mk.RiskFree:
 
 def run_simulation(profile: fire.ClientProfile, grid: fire.ResampledGrid) -> fire.WealthSimulation:
     """Same seed for every plan (common random numbers), so plans are compared on the same markets."""
-    return simulate(profile, grid, risk_free(), fire.N_PATHS, int(st.session_state["seed"]))
+    return simulate(profile, grid, risk_free(), fire.N_PATHS, fire.SEED)
 
 
 def plan(model: Dict, profile: fire.ClientProfile):
@@ -260,18 +257,6 @@ def set_hedged() -> None:
         st.session_state.pop(k, None)
 
 
-def set_mu_adj() -> None:
-    """Expected return adjustment changed: new portfolios, so the risk range restarts at its defaults."""
-    st.session_state["mu_adj"] = st.session_state["_mu_adj"]
-    for k in ("sig_min", "sig_max", "_sig_min", "_sig_max"):
-        st.session_state.pop(k, None)
-
-
-def mu_label(mu_adj: float) -> str:
-    """How the expected returns shown were obtained."""
-    return "historical estimate" + (f" minus {mu_adj * 100:.1f} pp" if mu_adj > 0 else "")
-
-
 def hedge_toggle() -> None:
     field(st.toggle, "Currency hedging", "hedged", on_change=set_hedged)
     st.caption(HEDGE_TEXT)
@@ -292,7 +277,7 @@ def manual_risk_range(rets: pd.DataFrame):
     """Range of the manual risk sliders (point-estimate frontier, cheap) and their starting values;
     keeps stored values inside the range."""
     lower, upper = current_bounds()
-    sig_minus, sig_plus = point_risk_range(rets, lower, upper, st.session_state["mu_adj"] / 100)
+    sig_minus, sig_plus = point_risk_range(rets, lower, upper)
     d_min, d_max = fire.default_sigma_range(sig_minus, sig_plus)
     lo, hi = round(sig_minus * 100, 2), round(sig_plus * 100, 2)
     st.session_state.setdefault("sig_min", round(d_min * 100, 2))
@@ -331,8 +316,7 @@ def profile_rows(s, gb: Optional[Dict] = None, start_vol: Optional[float] = None
                                     f"({chf(s['income'] - s['expenses'])} saved per year)", 2),
             ("Invested wealth", chf(s["wealth"]), 3),
             ("Investment rules", rules_text(*current_bounds()), PREFS),
-            ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%"
-                            + (f", expected returns lowered by {s['mu_adj']:.1f} pp" if s["mu_adj"] > 0 else ""),
+            ("Assumptions", f"withdrawal rate {s['swr']:.2f}%, inflation {s['infl']:.2f}%",
              ASSUMPTIONS_STEP),
             ("Currency hedging", "yes" if s["hedged"] else "no", ASSUMPTIONS_STEP),
             ("Risk range", risk, ASSUMPTIONS_STEP)]
@@ -438,7 +422,7 @@ def questionnaire(rets: pd.DataFrame) -> None:
                   help="Share of your wealth you plan to spend each year once independent.")
             hedge_toggle()
             st.info(f"**Investment rules**  \n{rules_text(*current_bounds())}")
-            with st.expander("Advanced: risk range, expected returns, inflation and simulation"):
+            with st.expander("Advanced: risk range, inflation and risk-free rate"):
                 field(st.checkbox, "Set the risk range manually", "risk_manual")
                 if s["risk_manual"]:
                     lo, hi = manual_risk_range(rets)
@@ -452,15 +436,6 @@ def questionnaire(rets: pd.DataFrame) -> None:
                     st.caption("Default risk range, set when your plan is computed: lowest risk = volatility of "
                                "the minimum-risk portfolio + 0.5 pp, highest risk = 90% of the highest feasible "
                                "volatility.")
-                field(st.slider, "Expected return adjustment (percentage points)", "mu_adj", 0.0, 4.0,
-                      step=0.5, on_change=set_mu_adj,
-                      help="Subtracted from the expected real return of every asset class. The expected "
-                           "returns are historical averages (2004-2026) that include a long equity bull "
-                           "market and the gold rally, so they may be optimistic. 0 = historical averages.")
-                st.caption(f"By default (0) the expected returns are the historical means of "
-                           f"{rets.index[0]:%b %Y} - {rets.index[-1]:%b %Y}, which can be optimistic: the period "
-                           f"includes a long equity bull market and the gold rally. The same amount is subtracted "
-                           f"from every asset class.")
                 field(st.slider, "Expected inflation (%)", "infl", 0.0, 5.0, step=0.25,
                       help="Turns the nominal risk-free rate into a real one. Past returns are already "
                            "deflated with the Swiss consumer price index.")
@@ -468,8 +443,6 @@ def questionnaire(rets: pd.DataFrame) -> None:
                 if s["rf_manual"]:
                     field(st.number_input, "Flat real risk-free rate (%)", "rf_flat", -3.0, 5.0, step=0.1)
                 show_risk_free(s["target_age"] - s["age"])
-                field(st.number_input, "Random seed", "seed", 0, 2**31 - 1, step=1,
-                      help="The same seed always gives the same simulated markets.")
             if s["risk_manual"] and s["sig_min"] > s["sig_max"]:
                 st.error("The lowest risk cannot be higher than the highest risk.")
                 ok = False
@@ -485,8 +458,7 @@ def questionnaire(rets: pd.DataFrame) -> None:
                 c2.write(text)
                 c3.button("Edit", key=f"edit_{title}", on_click=go_to, args=(target_step,))
             st.caption("Showing your plan computes the portfolios once (about two minutes the first time). "
-                       "Afterwards only a change of currency hedging, investment rules or expected return "
-                       "adjustment computes them again.")
+                       "Afterwards only a change of currency hedging or investment rules computes them again.")
             for e in errors:
                 st.error(e)
             ok = not errors
@@ -753,7 +725,7 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
     with c1:
         table = allocation_table(x_today, profile.wealth, tickers)
         ui.show_table(table, {k: f for k, f in {"Weight": PCT1, "Amount": chf}.items() if k in table})
-        risk = (f"Expected return {pct(path['m'].iloc[0], 2)} (real, {mu_label(model['mu_adj'])}) and "
+        risk = (f"Expected return {pct(path['m'].iloc[0], 2)} (real, historical estimate) and "
                 f"volatility {pct(path['s'].iloc[0], 2)} (real) per year, i.e. after inflation.")
         if profile.wealth > 0:
             st.caption(f"{risk} The expected return is an average of past returns "
@@ -772,20 +744,6 @@ def tab_portfolio(model: Dict, profile: fire.ClientProfile, path: pd.DataFrame) 
                "As your wealth grows towards the FIRE capital it becomes more defensive. The actual portfolio "
                "adapts to your wealth each year; the chart shows the average over the simulated paths. "
                f"From age {profile.target_age} on you hold the {POST_FIRE} portfolio.")
-    with st.expander("Model & methodology"):
-        st.markdown(
-            "For each risk-aversion level $\\gamma$ on the resampled frontier ($B = 1{,}000$ bootstrap draws on "
-            "monthly real CHF returns), portfolio weights solve:"
-        )
-        st.latex(
-            r"\max_{w} \; w' \hat{\mu}_{\text{adj}} - \frac{\gamma}{2}\, w' \hat{\Sigma} w "
-            r"\quad \text{s.t.} \quad \mathbf{1}'w = 1, \; \ell \le w \le u"
-        )
-        st.markdown(
-            "As wealth $W_t$ progresses toward the FIRE target $K = C_{\\text{annual}} / \\text{SWR}$, "
-            "the glide path smoothly transitions risk exposure from $\\sigma_{\\max}$ toward $\\sigma_{\\min}$, "
-            "holding the minimum-risk portfolio from the target age onward."
-        )
     st.divider()
 
     if len(path) > 1:
@@ -883,10 +841,9 @@ def main() -> None:
 
     try:                          # the heavy step: once per submitted set of inputs (cached)
         with st.spinner("Computing your portfolios (1'000 resampled frontiers). This takes about two minutes "
-                        "and runs again only if you change the hedging, the investment rules or the expected "
-                        "return adjustment."):
+                        "and runs again only if you change the hedging or the investment rules."):
             model = build_model(rets, bool(st.session_state["hedged"]), opt.CONFIG["n_resamples"],
-                                opt.CONFIG["seed"], lower, upper, float(st.session_state["mu_adj"]) / 100)
+                                fire.SEED, lower, upper)
     except Exception as e:
         st.error(f"The portfolio optimisation failed ({e}). Please reload the page.")
         st.stop()
